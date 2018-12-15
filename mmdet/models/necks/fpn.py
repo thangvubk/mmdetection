@@ -14,7 +14,8 @@ class FPN(nn.Module):
                  end_level=-1,
                  add_extra_convs=False,
                  normalize=None,
-                 activation=None):
+                 activation=None,
+                 panet_bott_up=False):
         super(FPN, self).__init__()
         assert isinstance(in_channels, list)
         self.in_channels = in_channels
@@ -23,6 +24,7 @@ class FPN(nn.Module):
         self.num_outs = num_outs
         self.activation = activation
         self.with_bias = normalize is None
+        self.panet_bott_up = panet_bott_up
 
         if end_level == -1:
             self.backbone_end_level = self.num_ins
@@ -65,6 +67,23 @@ class FPN(nn.Module):
             # setattr(self, 'lateral_conv{}'.format(lvl_id), l_conv)
             # setattr(self, 'fpn_conv{}'.format(lvl_id), fpn_conv)
 
+        # add panet bottom up path
+        if panet_bott_up:
+            self.panet_conv1 = nn.ModuleList()
+            self.panet_conv2 = nn.ModuleList()
+
+            for _ in range(self.start_level + 1, self.backbone_end_level):
+                self.panet_conv1.append(ConvModule(
+                    out_channels, out_channels, 3, stride=2, padding=1,
+                    normalize=normalize, bias=self.with_bias,
+                    activation='relu', inplace=True))
+
+                self.panet_conv2.append(ConvModule(
+                    out_channels, out_channels, 3, padding=1,
+                    normalize=normalize, bias=self.with_bias,
+                    activation='relu', inplace=True))
+
+
         # add extra conv layers (e.g., RetinaNet)
         extra_levels = num_outs - self.backbone_end_level + self.start_level
         if add_extra_convs and extra_levels >= 1:
@@ -106,9 +125,23 @@ class FPN(nn.Module):
 
         # build outputs
         # part 1: from original levels
-        outs = [
-            self.fpn_convs[i](laterals[i]) for i in range(used_backbone_levels)
-        ]
+        if self.panet_bott_up:
+            mids = [self.fpn_convs[i](laterals[i])
+                    for i in range(used_backbone_levels)]
+            
+            # first level is identity map from PFN
+            outs = [mids[0]]
+            for i in range(1, used_backbone_levels):
+                out_tmp = self.panet_conv1[i - 1](outs[-1])
+                out_tmp = out_tmp + mids[i]
+                out_tmp = self.panet_conv2[i - 1](out_tmp)
+                outs.append(out_tmp)
+        else:
+            outs = [self.fpn_convs[i](laterals[i]) 
+                    for i in range(used_backbone_levels)]
+        
+
+
         # part 2: add extra levels
         if self.num_outs > len(outs):
             # use max pool to get more levels on top of outputs
