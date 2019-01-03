@@ -3,6 +3,7 @@ import numpy as np
 import pycocotools.mask as mask_util
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..utils import ConvModule
 from mmdet.core import mask_cross_entropy, mask_target
@@ -159,3 +160,193 @@ class FCNMaskHead(nn.Module):
             cls_segms[label - 1].append(rle)
 
         return cls_segms
+
+class MSAdaFCNMaskHead(FCNMaskHead):
+
+    def __init__(self,
+                 num_lvls=4,
+                 num_convs=4,
+                 in_channels=256,
+                 conv_out_channels=256,
+                 out_reso=28,
+                 num_classes=81,
+                 class_agnostic=False,
+                 normalize=None):
+        super(FCNMaskHead, self).__init__()
+        
+        self.conv_out_channels = conv_out_channels
+        self.out_reso = out_reso
+        self.num_classes = num_classes
+        self.class_agnostic = class_agnostic
+        with_bias = normalize is None 
+
+        self.ada_convs1 = nn.ModuleList()
+        for i in range(num_lvls):
+            self.ada_convs1.append(ConvModule(in_channels,
+                                              conv_out_channels,
+                                              3,
+                                              padding=1,
+                                              normalize=normalize,
+                                              bias=with_bias))
+
+        self.ada_convs2 = nn.ModuleList()
+        for i in range(num_lvls):
+            self.ada_convs2.append(ConvModule(in_channels,
+                                              conv_out_channels,
+                                              3,
+                                              padding=1,
+                                              normalize=normalize,
+                                              bias=with_bias))
+
+        self.ada_convs3 = nn.ModuleList()
+        for i in range(num_lvls):
+            self.ada_convs3.append(ConvModule(in_channels,
+                                              conv_out_channels,
+                                              3,
+                                              padding=1,
+                                              normalize=normalize,
+                                              bias=with_bias))
+        
+        convs1 = []
+        for i in range(num_convs):
+            convs1.append(ConvModule(in_channels,
+                                     conv_out_channels,
+                                     3,
+                                     padding=1,
+                                     normalize=normalize,
+                                     bias=with_bias))
+        convs2 = []
+        for i in range(num_convs):
+            convs2.append(ConvModule(in_channels,
+                                     conv_out_channels,
+                                     3,
+                                     padding=1,
+                                     normalize=normalize,
+                                     bias=with_bias))
+
+        convs3 = []
+        for i in range(num_convs):
+            convs3.append(ConvModule(in_channels,
+                                     conv_out_channels,
+                                     3,
+                                     padding=1,
+                                     normalize=normalize,
+                                     bias=with_bias))
+
+        self.convs1 = nn.Sequential(*convs1)
+        self.convs2 = nn.Sequential(*convs2)
+        self.convs3 = nn.Sequential(*convs3)
+
+        num_classes = 1 if class_agnostic else num_classes
+        self.conv_logits = nn.Conv2d(conv_out_channels, num_classes, 1)
+
+
+    def init_weights(self):
+        for m in [self.conv_logits]:
+            nn.init.kaiming_normal_(
+                m.weight, mode='fan_out', nonlinearity='relu')
+            nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        assert isinstance(x, tuple)
+
+        inds1, inds2, inds3, x1, x2, x3  = x
+
+        def _ada_forward(ada_convs, x):
+            for i in range(len(x)):
+                x[i] = ada_convs[i](x[i])
+            for i in range(1, len(x)):
+                x[0] = torch.max(x[0], x[i])
+            x = x[0]
+            return x
+
+        def _up(x):
+            return interpolate(x, scale_factor=2, mode='bilinear')
+
+        def _insert(x, indsi, xi):
+            if xi.numel() > 0:
+                x[indsi] = xi
+
+        # convs1 pass
+        x1 = _ada_forward(self.ada_convs1, x1)
+        for conv in self.convs1:
+            x1 = conv(x1)
+        x1 = _up(x1)
+
+        # convs2 pass
+        x2 = _ada_forward(self.ada_convs2, x2)
+        for conv in self.convs2:
+            x1 = conv(x1)
+            x2 = conv(x2)
+        x1 = _up(x1)
+        x2 = _up(x2)
+
+        # convs3 pass
+        x3 = _ada_forward(self.ada_convs3, x3)
+        for conv in self.convs3:
+            x1 = conv(x1)
+            x2 = conv(x2)
+            x3 = conv(x3)
+
+        # merge x
+        x = torch.cuda.FloatTensor(len(inds1), self.conv_out_channels,
+                                   self.out_reso, self.out_reso).fill_(0)
+
+        _insert(x, inds1, x1)
+        _insert(x, inds2, x2)
+        _insert(x, inds3, x3)
+
+        mask_pred = self.conv_logits(x)
+        return mask_pred
+
+from torch.nn.modules.utils import _ntuple
+import math
+def interpolate(
+    input, size=None, scale_factor=None, mode="nearest", align_corners=None
+):
+    if input.numel() > 0:
+        return torch.nn.functional.interpolate(
+            input, size, scale_factor, mode, align_corners
+        )
+
+    def _check_size_scale_factor(dim):
+        if size is None and scale_factor is None:
+            raise ValueError("either size or scale_factor should be defined")
+        if size is not None and scale_factor is not None:
+            raise ValueError("only one of size or scale_factor should be defined")
+        if (
+            scale_factor is not None
+            and isinstance(scale_factor, tuple)
+            and len(scale_factor) != dim
+        ):
+            raise ValueError(
+                "scale_factor shape must match input shape. "
+                "Input is {}D, scale_factor size is {}".format(dim, len(scale_factor))
+            )
+
+    def _output_size(dim):
+        _check_size_scale_factor(dim)
+        if size is not None:
+            return size
+        scale_factors = _ntuple(dim)(scale_factor)
+        # math.floor might return float in py2.7
+        return [
+            int(math.floor(input.size(i + 2) * scale_factors[i])) for i in range(dim)
+        ]
+
+    #output_shape = tuple(_output_size(2))
+    #output_shape = input.shape[:-2] + output_shape
+    return _NewEmptyTensorOp.apply(input, [0])
+
+class _NewEmptyTensorOp(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, new_shape):
+        ctx.shape = x.shape
+        return x.new_empty(new_shape)
+
+    @staticmethod
+    def backward(ctx, grad):
+        shape = ctx.shape
+        return _NewEmptyTensorOp.apply(grad, shape), None
+
+

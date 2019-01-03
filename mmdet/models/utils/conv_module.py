@@ -1,10 +1,21 @@
 import warnings
 
+import torch
 import torch.nn as nn
 from mmcv.cnn import kaiming_init, constant_init
 
 from .norm import build_norm_layer
 
+class _NewEmptyTensorOp(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, new_shape):
+        ctx.shape = x.shape
+        return x.new_empty(new_shape)
+
+    @staticmethod
+    def backward(ctx, grad):
+        shape = ctx.shape
+        return _NewEmptyTensorOp.apply(grad, shape), None
 
 class ConvModule(nn.Module):
 
@@ -70,16 +81,27 @@ class ConvModule(nn.Module):
             constant_init(self.norm, 1, bias=0)
 
     def forward(self, x, activate=True, norm=True):
-        if self.activate_last:
-            x = self.conv(x)
-            if norm and self.with_norm:
-                x = self.norm(x)
-            if activate and self.with_activatation:
-                x = self.activate(x)
+        if x.numel() > 0:
+            if self.activate_last:
+                x = self.conv(x)
+                if norm and self.with_norm:
+                    x = self.norm(x)
+                if activate and self.with_activatation:
+                    x = self.activate(x)
+            else:
+                if norm and self.with_norm:
+                    x = self.norm(x)
+                if activate and self.with_activatation:
+                    x = self.activate(x)
+                x = self.conv(x)
+            return x
         else:
-            if norm and self.with_norm:
-                x = self.norm(x)
-            if activate and self.with_activatation:
-                x = self.activate(x)
-            x = self.conv(x)
-        return x
+            output_shape = [
+                (i + 2 * p - (di * (k - 1) + 1)) // d + 1
+                for i, p, di, k, d in zip(
+                    x.shape[-2:], self.padding, self.dilation, self.kernel_size, self.stride
+                )
+            ]
+            output_shape = [x.shape[0], self.conv.weight.shape[0]] + output_shape
+            return _NewEmptyTensorOp.apply(x, output_shape)
+

@@ -1,4 +1,6 @@
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .bbox_head import BBoxHead
 from ..utils import ConvModule
@@ -179,3 +181,105 @@ class SharedFCBBoxHead(ConvFCBBoxHead):
             fc_out_channels=fc_out_channels,
             *args,
             **kwargs)
+
+class MSAdaConvFCBBoxHead(ConvFCBBoxHead, BBoxHead):
+
+    def __init__(self,
+                 num_shared_convs=4,
+                 num_lvls=4,
+                 conv_out_channels=256,
+                 fc_out_channels=1024,
+                 normalize=None,
+                 *args,
+                 **kwargs):
+
+        assert num_shared_convs >= 1 and num_lvls > 1
+        BBoxHead.__init__(self, *args, **kwargs)
+
+        self.conv_out_channels = conv_out_channels
+        self.fc_out_channels = fc_out_channels
+        self.normalize = normalize
+        self.with_bias = normalize is None
+
+        self.ada_convs1 = nn.ModuleList()
+        for i in range(num_lvls):
+            self.ada_convs1.append(nn.Sequential(
+                nn.Conv2d(self.in_channels, self.conv_out_channels, 3, 1, 1),
+                nn.ReLU(inplace=True)))
+
+        self.ada_convs2 = nn.ModuleList()
+        for i in range(num_lvls):
+            self.ada_convs2.append(nn.Sequential(
+                nn.Conv2d(self.in_channels, self.conv_out_channels, 3, 1, 1),
+                nn.ReLU(inplace=True)))
+
+        self.ada_convs3 = nn.ModuleList()
+        for i in range(num_lvls):
+            self.ada_convs3.append(nn.Sequential(
+                nn.Conv2d(self.in_channels, self.conv_out_channels, 3, 1, 1),
+                nn.ReLU(inplace=True)))
+
+        self.convs3, _, _ = \
+            self._add_conv_fc_branch(
+                2, 0, self.conv_out_channels,
+                True)
+
+        self.convs2, _, _ = \
+            self._add_conv_fc_branch(
+                2, 0, self.conv_out_channels*2,
+                True)
+
+        self.convs1, self.fc, last_dim = \
+            self._add_conv_fc_branch(
+                2, 1, self.conv_out_channels*2,
+                True)
+
+        if self.with_cls:
+            self.fc_cls = nn.Linear(last_dim, self.num_classes)
+        if self.with_reg:
+            out_dim_reg = (4 if self.reg_class_agnostic else
+                           4 * self.num_classes)
+            self.fc_reg = nn.Linear(last_dim, out_dim_reg)
+
+    def init_weights(self):
+        BBoxHead.init_weights(self)
+        nn.init.xavier_uniform_(self.fc[0].weight)
+        nn.init.constant_(self.fc[0].bias, 0)
+
+    def forward(self, x):
+
+        # adaptive feature pooling
+        def _ada_forward(ada_convs, x):
+            for i in range(len(x)):
+                x[i] = ada_convs[i](x[i])
+            for i in range(1, len(x)):
+                x[0] = torch.max(x[0], x[i])
+            x = x[0]
+            return x
+
+        def _down(x):
+            return F.avg_pool2d(x, 2)
+
+        assert isinstance(x, tuple) and isinstance(x[0], list)
+        x1, x2, x3 = x
+        x1 = _ada_forward(self.ada_convs1, x1)
+        x2 = _ada_forward(self.ada_convs2, x2)
+        x3 = _ada_forward(self.ada_convs3, x3)
+
+        for conv in self.convs3:
+            x3 = conv(x3)
+
+        x2 = torch.cat([x2, _down(x3)], dim=1)
+        for conv in self.convs2:
+            x2 = conv(x2)
+
+        x1 = torch.cat([x1, _down(x2)], dim=1)
+        for conv in self.convs1:
+            x1 = conv(x1)
+        x1 = x1.view(x1.size(0), -1)
+
+        x1 = self.fc[0](x1)
+
+        cls_score = self.fc_cls(x1) if self.with_cls else None
+        bbox_pred = self.fc_reg(x1) if self.with_reg else None
+        return cls_score, bbox_pred

@@ -1,3 +1,3 @@
-from .fcn_mask_head import FCNMaskHead
+from .fcn_mask_head import FCNMaskHead, MSAdaFCNMaskHead
 
-__all__ = ['FCNMaskHead']
+__all__ = ['FCNMaskHead', 'MSAdaFCNMaskHead']
