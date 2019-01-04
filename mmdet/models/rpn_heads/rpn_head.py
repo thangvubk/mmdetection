@@ -11,6 +11,46 @@ from mmdet.core import (AnchorGenerator, anchor_target, delta2bbox,
 from mmdet.ops import nms
 from ..utils import normal_init
 
+class LargeSeparableConv2d(nn.Module):
+  def __init__(self, c_in, c_out, kernel_size=(3,3), bias=False, bn=False):
+    super(LargeSeparableConv2d, self).__init__()
+    
+    #dim_out = 10 * 7 * 7    
+    #c_mid = 64 if setting == 'S' else 256
+
+    self.din = c_in
+    self.c_mid = c_out
+    self.c_out = c_out
+    self.k_height = (kernel_size[0], 1)
+    self.k_width = (1, kernel_size[1])
+    self.pad_width = 0
+    self.pad_height = 0
+    self.bias = bias
+    self.bn = bn
+
+    self.block1_1 = nn.Conv2d(self.din, self.c_mid, self.k_width, 1, padding=self.pad_width, bias=self.bias)
+    self.bn1_1 = nn.BatchNorm2d(self.c_mid)
+    self.block1_2 = nn.Conv2d(self.c_mid, self.c_out, self.k_height, 1, padding=self.pad_height, bias=self.bias)
+    self.bn1_2 = nn.BatchNorm2d(self.c_out)
+
+    self.block2_1 = nn.Conv2d(self.din, self.c_mid, self.k_height, 1, padding=self.pad_height, bias=self.bias)
+    self.bn2_1 = nn.BatchNorm2d(self.c_mid)
+    self.block2_2 = nn.Conv2d(self.c_mid, self.c_out, self.k_width, 1, padding=self.pad_width, bias=self.bias)
+    self.bn2_2 = nn.BatchNorm2d(self.c_out)
+
+  def forward(self, x):
+    x1 = self.block1_1(x)
+    x1 = self.bn1_1(x1) if self.bn else x1
+    x1 = self.block1_2(x1)
+    x1 = self.bn1_2(x1) if self.bn else x1
+
+    x2 = self.block2_1(x)
+    x2 = self.bn2_1(x2) if self.bn else x2
+    x2 = self.block2_2(x2)
+    x2 = self.bn2_2(x2) if self.bn else x2
+
+    return x1 + x2
+
 
 class RPNHead(nn.Module):
     """Network head of RPN.
@@ -53,19 +93,38 @@ class RPNHead(nn.Module):
         self.target_means = target_means
         self.target_stds = target_stds
         self.use_sigmoid_cls = use_sigmoid_cls
+        self.num_groups = len(anchor_ratios)
 
         self.anchor_generators = []
         for anchor_base in self.anchor_base_sizes:
             self.anchor_generators.append(
                 AnchorGenerator(anchor_base, anchor_scales, anchor_ratios))
+
         self.rpn_conv = nn.Conv2d(in_channels, feat_channels, 3, padding=1)
+        self.roi_convs, roi_channels = self._inline_roi()
+
         self.relu = nn.ReLU(inplace=True)
         self.num_anchors = len(self.anchor_ratios) * len(self.anchor_scales)
         out_channels = (self.num_anchors
                         if self.use_sigmoid_cls else self.num_anchors * 2)
-        self.rpn_cls = nn.Conv2d(feat_channels, out_channels, 1)
-        self.rpn_reg = nn.Conv2d(feat_channels, self.num_anchors * 4, 1)
+        self.rpn_cls = nn.Conv2d(roi_channels, out_channels, 1, groups=self.num_groups)
+        self.rpn_reg = nn.Conv2d(roi_channels, self.num_anchors * 4, 1, groups=self.num_groups)
         self.debug_imgs = None
+
+    def _inline_roi(self):
+        # currently support FPN where each len(anchor_scales) = 1
+        assert len(self.anchor_scales) == 1
+        self.feat_size = self.anchor_scales[0]
+
+        roi_convs = nn.ModuleList()
+        roi_channels = self.feat_channels // self.num_groups
+        for ratio in self.anchor_ratios:
+            kernel = [int(self.feat_size * ratio), int(self.feat_size / ratio)]
+            roi_convs.append(LargeSeparableConv2d(self.in_channels, roi_channels, kernel, True))
+        roi_channels = roi_channels * self.num_groups
+
+        return roi_convs, roi_channels
+        
 
     def init_weights(self):
         normal_init(self.rpn_conv, std=0.01)
@@ -73,9 +132,22 @@ class RPNHead(nn.Module):
         normal_init(self.rpn_reg, std=0.01)
 
     def forward_single(self, x):
-        rpn_feat = self.relu(self.rpn_conv(x))
-        rpn_cls_score = self.rpn_cls(rpn_feat)
-        rpn_bbox_pred = self.rpn_reg(rpn_feat)
+        def _forward(x, conv, ratio):
+            # h, w
+            kernel = [int(self.feat_size * ratio), int(self.feat_size / ratio)]
+            # left right top down
+            pad = [kernel[1] // 2, kernel[1] // 2 - 1, 
+                   kernel[0] // 2, kernel[0] // 2 - 1]
+            x_pad = F.pad(x, pad)
+            return self.relu(conv(x_pad))
+
+        rpn = self.relu(self.rpn_conv(x))
+        roi_x = []
+        for conv, ratio in zip(self.roi_convs, self.anchor_ratios):
+            roi_x.append(_forward(x, conv, ratio))
+        x = torch.cat(roi_x, dim=1)
+        rpn_cls_score = self.rpn_cls(x)
+        rpn_bbox_pred = self.rpn_reg(x)
         return rpn_cls_score, rpn_bbox_pred
 
     def forward(self, feats):
