@@ -1,3 +1,3 @@
-from .fpn import FPN
+from .fpn import FPN, GlobalPoolFPN
 
-__all__ = ['FPN']
+__all__ = ['FPN', 'GlobalPoolFPN']
