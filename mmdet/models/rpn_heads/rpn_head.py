@@ -81,7 +81,8 @@ class RPNHead(nn.Module):
                  anchor_base_sizes=None,
                  target_means=(.0, .0, .0, .0),
                  target_stds=(1.0, 1.0, 1.0, 1.0),
-                 use_sigmoid_cls=False):
+                 use_sigmoid_cls=False,
+                 num_levels=5):
         super(RPNHead, self).__init__()
         self.in_channels = in_channels
         self.feat_channels = feat_channels
@@ -100,15 +101,23 @@ class RPNHead(nn.Module):
             self.anchor_generators.append(
                 AnchorGenerator(anchor_base, anchor_scales, anchor_ratios))
 
-        self.rpn_conv = nn.Conv2d(in_channels, feat_channels, 3, padding=1)
-        self.roi_convs, roi_channels = self._inline_roi()
+        self.rpn_convs = nn.ModuleList()
+        self.roi_convs = nn.ModuleList()
+        for _ in range(num_levels):
+            self.rpn_convs.append(nn.Conv2d(in_channels, feat_channels,
+                                            3, padding=1))
+            self.roi_convs.append(self._inline_roi())
 
         self.relu = nn.ReLU(inplace=True)
         self.num_anchors = len(self.anchor_ratios) * len(self.anchor_scales)
         out_channels = (self.num_anchors
                         if self.use_sigmoid_cls else self.num_anchors * 2)
-        self.rpn_cls = nn.Conv2d(roi_channels, out_channels, 1, groups=self.num_groups)
-        self.rpn_reg = nn.Conv2d(roi_channels, self.num_anchors * 4, 1, groups=self.num_groups)
+
+        roi_channels = feat_channels // self.num_groups * self.num_groups
+        self.rpn_cls = nn.Conv2d(roi_channels, out_channels,
+                                 1, groups=self.num_groups)
+        self.rpn_reg = nn.Conv2d(roi_channels, self.num_anchors * 4,
+                                 1, groups=self.num_groups)
         self.debug_imgs = None
 
     def _inline_roi(self):
@@ -117,21 +126,21 @@ class RPNHead(nn.Module):
         self.feat_size = self.anchor_scales[0]
 
         roi_convs = nn.ModuleList()
-        roi_channels = self.feat_channels // self.num_groups
+        roi_channels_per_ratio = self.feat_channels // self.num_groups
         for ratio in self.anchor_ratios:
             kernel = [int(self.feat_size * ratio), int(self.feat_size / ratio)]
-            roi_convs.append(LargeSeparableConv2d(self.in_channels, roi_channels, kernel, True))
-        roi_channels = roi_channels * self.num_groups
-
-        return roi_convs, roi_channels
-        
+            roi_convs.append(LargeSeparableConv2d(self.in_channels,
+                                                  roi_channels_per_ratio,
+                                                  kernel, True))
+        return roi_convs
 
     def init_weights(self):
-        normal_init(self.rpn_conv, std=0.01)
-        normal_init(self.rpn_cls, std=0.01)
-        normal_init(self.rpn_reg, std=0.01)
+        for layer in [self.rpn_convs, self.rpn_cls, self.rpn_reg]:
+            for m in layer.modules():
+                if isinstance(m, nn.Conv2d):
+                    normal_init(m, std=0.01)
 
-    def forward_single(self, x):
+    def forward_single(self, rpn_conv, roi_convs, x):
         def _forward(x, conv, ratio):
             # h, w
             kernel = [int(self.feat_size * ratio), int(self.feat_size / ratio)]
@@ -141,9 +150,9 @@ class RPNHead(nn.Module):
             x_pad = F.pad(x, pad)
             return self.relu(conv(x_pad))
 
-        rpn = self.relu(self.rpn_conv(x))
+        rpn = self.relu(rpn_conv(x))
         roi_x = []
-        for conv, ratio in zip(self.roi_convs, self.anchor_ratios):
+        for conv, ratio in zip(roi_convs, self.anchor_ratios):
             roi_x.append(_forward(x, conv, ratio))
         x = torch.cat(roi_x, dim=1)
         rpn_cls_score = self.rpn_cls(x)
@@ -151,7 +160,8 @@ class RPNHead(nn.Module):
         return rpn_cls_score, rpn_bbox_pred
 
     def forward(self, feats):
-        return multi_apply(self.forward_single, feats)
+        return multi_apply(self.forward_single, self.rpn_convs,
+                           self.roi_convs, feats)
 
     def get_anchors(self, featmap_sizes, img_metas):
         """Get anchors according to feature map sizes.
