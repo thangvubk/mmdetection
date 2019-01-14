@@ -143,6 +143,46 @@ class PyramidPool(nn.Module):
         return output
 
 
+class LargeSeparableConv2d(nn.Module):
+  def __init__(self, c_in, c_out, kernel_size=15, bias=False, bn=False, setting='L'):
+    super(LargeSeparableConv2d, self).__init__()
+    
+    dim_out = 10 * 7 * 7    
+    c_mid = 64 if setting == 'S' else 256
+
+    self.din = c_in
+    self.c_mid = c_mid
+    self.c_out = c_out
+    self.k_height = (kernel_size, 1)
+    self.k_width = (1, kernel_size)
+    self.pad_height = (kernel_size//2, 0)
+    self.pad_width = (0, kernel_size//2)
+    self.bias = bias
+    self.bn = bn
+
+    self.block1_1 = nn.Conv2d(self.din, self.c_mid, self.k_width, 1, padding=self.pad_width, bias=self.bias)
+    self.bn1_1 = nn.BatchNorm2d(self.c_mid)
+    self.block1_2 = nn.Conv2d(self.c_mid, self.c_out, self.k_height, 1, padding=self.pad_height, bias=self.bias)
+    self.bn1_2 = nn.BatchNorm2d(self.c_out)
+
+    self.block2_1 = nn.Conv2d(self.din, self.c_mid, self.k_height, 1, padding=self.pad_height, bias=self.bias)
+    self.bn2_1 = nn.BatchNorm2d(self.c_mid)
+    self.block2_2 = nn.Conv2d(self.c_mid, self.c_out, self.k_width, 1, padding=self.pad_width, bias=self.bias)
+    self.bn2_2 = nn.BatchNorm2d(self.c_out)
+
+  def forward(self, x):
+    x1 = self.block1_1(x)
+    x1 = self.bn1_1(x1) if self.bn else x1
+    x1 = self.block1_2(x1)
+    x1 = self.bn1_2(x1) if self.bn else x1
+
+    x2 = self.block2_1(x)
+    x2 = self.bn2_1(x2) if self.bn else x2
+    x2 = self.block2_2(x2)
+    x2 = self.bn2_2(x2) if self.bn else x2
+
+    return x1 + x2
+
 class GlobalPoolFPN(nn.Module):
 
     def __init__(self,
@@ -179,24 +219,14 @@ class GlobalPoolFPN(nn.Module):
         self.fpn_convs = nn.ModuleList()
 
         for i in range(self.start_level, self.backbone_end_level):
-            if i == self.backbone_end_level - 1:
-                l_conv = ConvModule(
-                    in_channels[i],
-                    out_channels//2,
-                    1,
-                    normalize=normalize,
-                    bias=self.with_bias,
-                    activation=self.activation,
-                    inplace=False)
-            else:
-                l_conv = ConvModule(
-                    in_channels[i],
-                    out_channels,
-                    1,
-                    normalize=normalize,
-                    bias=self.with_bias,
-                    activation=self.activation,
-                    inplace=False)
+            l_conv = ConvModule(
+                in_channels[i],
+                out_channels,
+                1,
+                normalize=normalize,
+                bias=self.with_bias,
+                activation=self.activation,
+                inplace=False)
             fpn_conv = ConvModule(
                 out_channels,
                 out_channels,
@@ -215,10 +245,14 @@ class GlobalPoolFPN(nn.Module):
             # setattr(self, 'fpn_conv{}'.format(lvl_id), fpn_conv)
 
         # global pool
-        self.pool1 = PyramidPool(in_channels[-1], out_channels//8, 1)
-        self.pool2 = PyramidPool(in_channels[-1], out_channels//8, 2)
-        self.pool3 = PyramidPool(in_channels[-1], out_channels//8, 3)
-        self.pool4 = PyramidPool(in_channels[-1], out_channels//8, 6)
+        self.pool1 = PyramidPool(in_channels[-1], out_channels//4, 1)
+        self.pool2 = PyramidPool(in_channels[-1], out_channels//4, 2)
+        self.pool3 = PyramidPool(in_channels[-1], out_channels//4, 3)
+        self.pool4 = PyramidPool(in_channels[-1], out_channels//4, 6)
+        
+        self.nei_conv = LargeSeparableConv2d(in_channels[-1], out_channels, bias=True)
+
+        self.red_conv = nn.Conv2d(out_channels*3, out_channels,  1)
 
         # add extra conv layers (e.g., RetinaNet)
         extra_levels = num_outs - self.backbone_end_level + self.start_level
@@ -250,6 +284,13 @@ class GlobalPoolFPN(nn.Module):
                           self.pool3(x),
                           self.pool4(x)], dim=1)
 
+    def _local_global_neighboor(self, x, l_feat):
+        g_feat = self._global_pool(x)
+        n_feat = self.nei_conv(x)
+        lgn_feat = torch.cat([l_feat, g_feat, n_feat], dim=1)
+        return self.red_conv(lgn_feat)
+
+
     def forward(self, inputs):
         assert len(inputs) == len(self.in_channels)
 
@@ -259,10 +300,8 @@ class GlobalPoolFPN(nn.Module):
             for i, lateral_conv in enumerate(self.lateral_convs)
         ]
 
-        # append top feature with global pool
-        laterals[-1] = torch.cat([laterals[-1],
-                                 self._global_pool(inputs[-1])],
-                                 dim=1)
+        lgn_feat = self._local_global_neighboor(inputs[-1], laterals[-1])
+        laterals[-1] = lgn_feat
 
         # build top-down path
         used_backbone_levels = len(laterals)
