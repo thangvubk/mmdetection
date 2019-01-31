@@ -12,6 +12,7 @@ class BaseSampler(metaclass=ABCMeta):
                  pos_fraction,
                  neg_pos_ub=-1,
                  add_gt_as_proposals=True,
+                 ignore_fraction=False,
                  **kwargs):
         self.num = num
         self.pos_fraction = pos_fraction
@@ -19,6 +20,7 @@ class BaseSampler(metaclass=ABCMeta):
         self.add_gt_as_proposals = add_gt_as_proposals
         self.pos_sampler = self
         self.neg_sampler = self
+        self.ignore_fraction = ignore_fraction
 
     @abstractmethod
     def _sample_pos(self, assign_result, num_expected, **kwargs):
@@ -33,6 +35,7 @@ class BaseSampler(metaclass=ABCMeta):
                bboxes,
                gt_bboxes,
                gt_labels=None,
+               gt_self_inds=None,
                **kwargs):
         """Sample positive and negative bboxes.
 
@@ -53,11 +56,14 @@ class BaseSampler(metaclass=ABCMeta):
         gt_flags = bboxes.new_zeros((bboxes.shape[0], ), dtype=torch.uint8)
         if self.add_gt_as_proposals:
             bboxes = torch.cat([gt_bboxes, bboxes], dim=0)
-            assign_result.add_gt_(gt_labels)
+            assign_result.add_gt_(gt_labels, gt_self_inds)
             gt_ones = bboxes.new_ones(gt_bboxes.shape[0], dtype=torch.uint8)
             gt_flags = torch.cat([gt_ones, gt_flags])
 
-        num_expected_pos = int(self.num * self.pos_fraction)
+        if self.ignore_fraction:
+            num_expected_pos = 1e9
+        else:
+            num_expected_pos = int(self.num * self.pos_fraction)
         pos_inds = self.pos_sampler._sample_pos(
             assign_result, num_expected_pos, bboxes=bboxes, **kwargs)
         # We found that sampled indices have duplicated items occasionally.

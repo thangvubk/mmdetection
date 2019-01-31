@@ -11,9 +11,10 @@ class RandomSampler(BaseSampler):
                  pos_fraction,
                  neg_pos_ub=-1,
                  add_gt_as_proposals=True,
+                 ignore_fraction=False,
                  **kwargs):
         super(RandomSampler, self).__init__(num, pos_fraction, neg_pos_ub,
-                                            add_gt_as_proposals)
+                                            add_gt_as_proposals, ignore_fraction)
 
     @staticmethod
     def random_choice(gallery, num):

@@ -81,10 +81,10 @@ class MaxIoUAssigner(BaseAssigner):
             if ignore_bboxes_inds.numel() > 0:
                 overlaps[ignore_bboxes_inds[:, 0], :] = -1
 
-        assign_result = self.assign_wrt_overlaps(overlaps, gt_labels)
+        assign_result = self.assign_wrt_overlaps(overlaps, gt_bboxes, gt_labels)
         return assign_result
 
-    def assign_wrt_overlaps(self, overlaps, gt_labels=None):
+    def assign_wrt_overlaps(self, overlaps, gt_bboxes=None, gt_labels=None):
         """Assign w.r.t. the overlaps of bboxes with gts.
 
         Args:
@@ -143,4 +143,4 @@ class MaxIoUAssigner(BaseAssigner):
             assigned_labels = None
 
         return AssignResult(
-            num_gts, assigned_gt_inds, max_overlaps, labels=assigned_labels)
+            num_gts, assigned_gt_inds, max_overlaps, gt_bboxes=gt_bboxes, labels=assigned_labels)

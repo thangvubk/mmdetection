@@ -2,13 +2,14 @@ from __future__ import division
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 from .base import BaseDetector
 from .test_mixins import RPNTestMixin
 from .. import builder
 from ..registry import DETECTORS
 from mmdet.core import (assign_and_sample, bbox2roi, bbox2result, multi_apply,
-                        merge_aug_masks)
+                        merge_aug_masks, build_assigner, build_sampler)
 
 
 @DETECTORS.register_module
@@ -129,18 +130,50 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
         else:
             proposal_list = proposals
 
+        last_conv_feats = None
+        cascade_gt_bboxes = gt_bboxes
+        cascade_gt_labels = gt_labels
+
         for i in range(self.num_stages):
             rcnn_train_cfg = self.train_cfg.rcnn[i]
             lw = self.train_cfg.stage_loss_weights[i]
 
             # assign gts and sample proposals
-            assign_results, sampling_results = multi_apply(
-                assign_and_sample,
-                proposal_list,
-                gt_bboxes,
-                gt_bboxes_ignore,
-                gt_labels,
-                cfg=rcnn_train_cfg)
+            bbox_assigner = build_assigner(rcnn_train_cfg.assigner)
+            bbox_sampler = build_sampler(
+                rcnn_train_cfg.sampler, context=self)
+            num_imgs = img.size(0)
+            assign_results = []
+            sampling_results = []
+
+            if i == 0:
+                for j in range(num_imgs):
+                    assign_result = bbox_assigner.assign(
+                        proposal_list[j], gt_bboxes[j], gt_bboxes_ignore[j],
+                        gt_labels[j])
+                    sampling_result = bbox_sampler.sample(
+                        assign_result,
+                        proposal_list[j],
+                        cascade_gt_bboxes[j],
+                        cascade_gt_labels[j])
+                    assign_results.append(assign_result)
+                    sampling_results.append(sampling_result)
+                num_gts = [res.pos_is_gt.sum() for res in sampling_results]
+                cascade_gt_inds = [ares.gt_inds[sres.pos_inds[:num]] for ares, sres, num in zip(assign_results, sampling_results, num_gts)]
+                cascade_gt_bboxes = [res.pos_gt_bboxes[:num] for res, num in zip(sampling_results, num_gts)]
+                cascade_gt_labels = [res.pos_gt_labels[:num] for res, num in zip(sampling_results, num_gts)]
+            else:
+                for j in range(num_imgs):
+                    assign_result = bbox_assigner.assign(
+                        proposal_list[j], gt_bboxes[j], gt_bboxes_ignore[j],
+                        gt_labels[j])
+                    sampling_result = bbox_sampler.sample(
+                        assign_result,
+                        proposal_list[j],
+                        cascade_gt_bboxes[j],
+                        cascade_gt_labels[j],
+                        cascade_gt_inds[j])
+                    sampling_results.append(sampling_result)
 
             # bbox head forward and loss
             bbox_roi_extractor = self.bbox_roi_extractor[i]
@@ -149,7 +182,20 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
             rois = bbox2roi([res.bboxes for res in sampling_results])
             bbox_feats = bbox_roi_extractor(x[:bbox_roi_extractor.num_inputs],
                                             rois)
-            cls_score, bbox_pred = bbox_head(bbox_feats)
+
+            if last_conv_feats is not None:
+                inds = [torch.cat([res.pos_inds, res.neg_inds]) for res in sampling_results]
+                offsets = [0] + [len(ind) for ind in inds[:-1]]
+                offsets = np.cumsum(offsets)
+                inds = [offset + ind for offset, ind in zip(offsets, inds)]
+                inds = torch.cat(inds)
+                if len(last_conv_feats) != torch.max(inds) + 1:
+                    import pdb; pdb.set_trace()
+                assert len(last_conv_feats) == len(inds) == len(bbox_feats)
+
+                last_sorted_feats = last_conv_feats[inds]
+                bbox_feats = bbox_feats + last_sorted_feats
+            last_conv_feats, cls_score, bbox_pred = bbox_head(bbox_feats)
 
             bbox_targets = bbox_head.get_target(sampling_results, gt_bboxes,
                                                 gt_labels, rcnn_train_cfg)
@@ -201,6 +247,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
         ms_segm_result = {}
         ms_scores = []
         rcnn_test_cfg = self.test_cfg.rcnn
+        last_conv_feats = None
 
         rois = bbox2roi(proposal_list)
         for i in range(self.num_stages):
@@ -209,7 +256,9 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
 
             bbox_feats = bbox_roi_extractor(
                 x[:len(bbox_roi_extractor.featmap_strides)], rois)
-            cls_score, bbox_pred = bbox_head(bbox_feats)
+            if last_conv_feats is not None:
+                bbox_feats = bbox_feats + last_conv_feats
+            last_conv_feats, cls_score, bbox_pred = bbox_head(bbox_feats)
             ms_scores.append(cls_score)
 
             if self.test_cfg.keep_all_stages:

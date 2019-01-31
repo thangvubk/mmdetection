@@ -133,6 +133,7 @@ class ConvFCBBoxHead(BBoxHead):
         if self.num_shared_convs > 0:
             for conv in self.shared_convs:
                 x = conv(x)
+        conv_feat = x
 
         if self.num_shared_fcs > 0:
             if self.with_avg_pool:
@@ -164,7 +165,7 @@ class ConvFCBBoxHead(BBoxHead):
 
         cls_score = self.fc_cls(x_cls) if self.with_cls else None
         bbox_pred = self.fc_reg(x_reg) if self.with_reg else None
-        return cls_score, bbox_pred
+        return conv_feat, cls_score, bbox_pred
 
 
 @HEADS.register_module
