@@ -194,7 +194,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                 assert len(last_conv_feats) == len(inds) == len(bbox_feats)
 
                 last_sorted_feats = last_conv_feats[inds]
-                bbox_feats = bbox_feats + last_sorted_feats
+                bbox_feats += last_sorted_feats
             last_conv_feats, cls_score, bbox_pred = bbox_head(bbox_feats)
 
             bbox_targets = bbox_head.get_target(sampling_results, gt_bboxes,

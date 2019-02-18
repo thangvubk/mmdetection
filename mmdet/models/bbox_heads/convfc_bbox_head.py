@@ -79,6 +79,15 @@ class ConvFCBBoxHead(BBoxHead):
                            4 * self.num_classes)
             self.fc_reg = nn.Linear(self.reg_last_dim, out_dim_reg)
 
+        self.bridge_conv = ConvModule(
+            self.conv_out_channels,
+            self.conv_out_channels,
+            1,
+            normalize=self.normalize,
+            bias=self.with_bias,
+            activation=None)
+
+
     def _add_conv_fc_branch(self,
                             num_branch_convs,
                             num_branch_fcs,
@@ -133,7 +142,7 @@ class ConvFCBBoxHead(BBoxHead):
         if self.num_shared_convs > 0:
             for conv in self.shared_convs:
                 x = conv(x)
-        conv_feat = x
+        conv_feat = self.bridge_conv(x)
 
         if self.num_shared_fcs > 0:
             if self.with_avg_pool:
