@@ -69,7 +69,7 @@ model = dict(
         featmap_strides=[4, 8, 16, 32]),
     mask_head=dict(
         type='FCNMaskHead',
-        num_convs=4,
+        num_convs=12,
         in_channels=256,
         conv_out_channels=256,
         num_classes=81))
@@ -214,7 +214,7 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type='TextLoggerHook'),
-        # dict(type='TensorboardLoggerHook')
+        dict(type='TensorboardLoggerHook')
     ])
 # yapf:enable
 # runtime settings

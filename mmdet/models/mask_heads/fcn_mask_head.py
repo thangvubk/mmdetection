@@ -4,8 +4,78 @@ import pycocotools.mask as mask_util
 import torch
 import torch.nn as nn
 
-from ..utils import ConvModule
+from ..utils import ConvModule, build_norm_layer, kaiming_init
 from mmdet.core import mask_cross_entropy, mask_target
+
+
+def conv3x3(in_planes, out_planes, stride=1, dilation=1):
+    "3x3 convolution with padding"
+    return nn.Conv2d(
+        in_planes,
+        out_planes,
+        kernel_size=3,
+        stride=stride,
+        padding=dilation,
+        dilation=dilation,
+        bias=True)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self,
+                 inplanes,
+                 planes,
+                 stride=1,
+                 dilation=1,
+                 downsample=None,
+                 style='pytorch',
+                 with_cp=False,
+                 normalize=dict(type='BN')):
+        super(BasicBlock, self).__init__()
+
+        self.norm1_name, norm1 = build_norm_layer(normalize, planes, postfix=1)
+        self.norm2_name, norm2 = build_norm_layer(normalize, planes, postfix=2)
+
+        self.conv1 = conv3x3(inplanes, planes, stride, dilation)
+        self.add_module(self.norm1_name, norm1)
+        self.conv2 = conv3x3(planes, planes)
+        self.add_module(self.norm2_name, norm2)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+        self.dilation = dilation
+        assert not with_cp
+
+        kaiming_init(self.conv1)
+        kaiming_init(self.conv2)
+
+    @property
+    def norm1(self):
+        return getattr(self, self.norm1_name)
+
+    @property
+    def norm2(self):
+        return getattr(self, self.norm2_name)
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        #out = self.norm1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        #out = self.norm2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
 
 
 class FCNMaskHead(nn.Module):
@@ -43,14 +113,22 @@ class FCNMaskHead(nn.Module):
             in_channels = (self.in_channels
                            if i == 0 else self.conv_out_channels)
             padding = (self.conv_kernel_size - 1) // 2
+            #self.convs.append(
+            #    ConvModule(
+            #        in_channels,
+            #        self.conv_out_channels,
+            #        3,
+            #        padding=padding,
+            #        normalize=normalize,
+            #        bias=self.with_bias))
             self.convs.append(
-                ConvModule(
+                BasicBlock(
                     in_channels,
                     self.conv_out_channels,
-                    3,
-                    padding=padding,
-                    normalize=normalize,
-                    bias=self.with_bias))
+                    normalize=dict(
+                        type='GN',
+                        num_groups=32)))
+
         if self.upsample_method is None:
             self.upsample = None
         elif self.upsample_method == 'deconv':
