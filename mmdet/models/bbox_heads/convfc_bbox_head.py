@@ -79,6 +79,8 @@ class ConvFCBBoxHead(BBoxHead):
                            4 * self.num_classes)
             self.fc_reg = nn.Linear(self.reg_last_dim, out_dim_reg)
 
+        self.bridge_fc = nn.Linear(self.cls_last_dim, self.conv_out_channels*self.roi_feat_size*self.roi_feat_size)
+
     def _add_conv_fc_branch(self,
                             num_branch_convs,
                             num_branch_fcs,
@@ -122,7 +124,7 @@ class ConvFCBBoxHead(BBoxHead):
 
     def init_weights(self):
         super(ConvFCBBoxHead, self).init_weights()
-        for module_list in [self.shared_fcs, self.cls_fcs, self.reg_fcs]:
+        for module_list in [self.shared_fcs, self.cls_fcs, self.reg_fcs, self.bridge_fc]:
             for m in module_list.modules():
                 if isinstance(m, nn.Linear):
                     nn.init.xavier_uniform_(m.weight)
@@ -138,9 +140,12 @@ class ConvFCBBoxHead(BBoxHead):
         if self.num_shared_fcs > 0:
             if self.with_avg_pool:
                 x = self.avg_pool(x)
+            n, c, h, w = x.size()
             x = x.view(x.size(0), -1)
             for fc in self.shared_fcs:
                 x = self.relu(fc(x))
+        conv_feat = self.bridge_fc(x)
+        conv_feat = conv_feat.view(-1, c, h, w)
         # separate branches
         x_cls = x
         x_reg = x
