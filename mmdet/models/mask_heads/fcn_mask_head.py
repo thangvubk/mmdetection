@@ -5,9 +5,53 @@ import torch
 import torch.nn as nn
 
 from ..registry import HEADS
-from ..utils import ConvModule
+from ..utils import ConvModule, build_norm_layer
 from mmdet.core import mask_cross_entropy, mask_target
+from mmcv.cnn import kaiming_init
 
+class ResBlock(nn.Module):
+    def __init__(self):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(256, 256, 3, padding=1)
+        self.conv2 = nn.Conv2d(256, 256, 3, padding=1)
+        self.relu = nn.ReLU(True)
+
+    def forward(self, x):
+        res = self.conv1(x)
+        res = self.relu(res)
+        res = self.conv2(res)
+        x = x + res
+        return x
+
+class BasicBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, downsample=None):
+        super(BasicBlock, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+
+        #for m in self.modules():
+        #    if isinstance(m, nn.Conv2d):
+        #        kaiming_init(m)
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.relu(out)
+        out = self.conv2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        #out = self.relu(out)
+
+        return out
+        
 
 @HEADS.register_module
 class FCNMaskHead(nn.Module):
@@ -44,15 +88,18 @@ class FCNMaskHead(nn.Module):
         for i in range(self.num_convs):
             in_channels = (self.in_channels
                            if i == 0 else self.conv_out_channels)
+            downsample = (nn.Conv2d(in_channels, self.conv_out_channels, 1)
+                          if i == 0 else None)
             padding = (self.conv_kernel_size - 1) // 2
-            self.convs.append(
-                ConvModule(
-                    in_channels,
-                    self.conv_out_channels,
-                    3,
-                    padding=padding,
-                    normalize=normalize,
-                    bias=self.with_bias))
+            #self.convs.append(
+            #    ConvModule(
+            #        in_channels,
+            #        self.conv_out_channels,
+            #        3,
+            #        padding=padding,
+            #        normalize=normalize,
+            #        bias=self.with_bias))
+            self.convs.append(BasicBlock(in_channels, self.conv_out_channels, downsample))
         if self.upsample_method is None:
             self.upsample = None
         elif self.upsample_method == 'deconv':

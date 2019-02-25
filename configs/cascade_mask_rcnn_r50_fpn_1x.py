@@ -69,9 +69,9 @@ model = dict(
         featmap_strides=[4, 8, 16, 32]),
     mask_head=dict(
         type='FCNMaskHead',
-        num_convs=12,
+        num_convs=24,
         in_channels=256,
-        conv_out_channels=256,
+        conv_out_channels=128,
         num_classes=81))
 # model training and testing settings
 train_cfg = dict(
