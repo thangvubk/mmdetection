@@ -23,6 +23,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                  bbox_head=None,
                  mask_roi_extractor=None,
                  mask_head=None,
+                 single_mask=False,
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None):
@@ -32,6 +33,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
 
         self.num_stages = num_stages
         self.backbone = builder.build_backbone(backbone)
+        self.single_mask = single_mask
 
         if neck is not None:
             self.neck = builder.build_neck(neck)
@@ -59,17 +61,26 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
         if mask_head is not None:
             self.mask_roi_extractor = nn.ModuleList()
             self.mask_head = nn.ModuleList()
-            if not isinstance(mask_roi_extractor, list):
-                mask_roi_extractor = [
-                    mask_roi_extractor for _ in range(num_stages)
-                ]
-            if not isinstance(mask_head, list):
-                mask_head = [mask_head for _ in range(num_stages)]
-            assert len(mask_roi_extractor) == len(mask_head) == self.num_stages
-            for roi_extractor, head in zip(mask_roi_extractor, mask_head):
-                self.mask_roi_extractor.append(
-                    builder.build_roi_extractor(roi_extractor))
-                self.mask_head.append(builder.build_head(head))
+            if self.single_mask:
+                shared_roi_extractor =\
+                    builder.build_roi_extractor(mask_roi_extractor)
+                shared_mask_head = builder.build_head(mask_head)
+                for _ in range(num_stages):
+                    self.mask_roi_extractor.append(shared_roi_extractor)
+                    self.mask_head.append(shared_mask_head)
+            else:
+                if not isinstance(mask_roi_extractor, list):
+                    mask_roi_extractor = [
+                        mask_roi_extractor for _ in range(num_stages)
+                    ]
+                if not isinstance(mask_head, list):
+                    mask_head = [mask_head for _ in range(num_stages)]
+                assert (len(mask_roi_extractor) == len(mask_head)
+                        == self.num_stages)
+                for roi_extractor, head in zip(mask_roi_extractor, mask_head):
+                    self.mask_roi_extractor.append(
+                        builder.build_roi_extractor(roi_extractor))
+                    self.mask_head.append(builder.build_head(head))
 
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
@@ -273,7 +284,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                            if rescale else det_bboxes)
                 mask_rois = bbox2roi([_bboxes])
                 aug_masks = []
-                for i in range(self.num_stages):
+                mask_stages = 1 if self.single_mask else self.num_stages
+                for i in range(mask_stages):
                     mask_roi_extractor = self.mask_roi_extractor[i]
                     mask_feats = mask_roi_extractor(
                         x[:len(mask_roi_extractor.featmap_strides)], mask_rois)
@@ -300,6 +312,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                     for stage in ms_bbox_result
                 }
             else:
+                assert not self.single_mask
                 results = ms_bbox_result
 
         return results

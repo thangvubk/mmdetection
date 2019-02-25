@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from ..registry import HEADS
-from ..utils import ConvModule
+from ..utils import ConvModule, ResBlock
 from mmdet.core import mask_cross_entropy, mask_target
 
 
@@ -14,6 +14,7 @@ class FCNMaskHead(nn.Module):
 
     def __init__(self,
                  num_convs=4,
+                 conv_to_res=False,
                  roi_feat_size=14,
                  in_channels=256,
                  conv_kernel_size=3,
@@ -29,6 +30,7 @@ class FCNMaskHead(nn.Module):
                 'Invalid upsample method {}, accepted methods '
                 'are "deconv", "nearest", "bilinear"'.format(upsample_method))
         self.num_convs = num_convs
+        self.conv_to_res = conv_to_res
         self.roi_feat_size = roi_feat_size  # WARN: not used and reserved
         self.in_channels = in_channels
         self.conv_kernel_size = conv_kernel_size
@@ -41,18 +43,26 @@ class FCNMaskHead(nn.Module):
         self.with_bias = normalize is None
 
         self.convs = nn.ModuleList()
-        for i in range(self.num_convs):
+        num_blocks = num_convs//2 if conv_to_res else num_convs
+        for i in range(num_blocks):
             in_channels = (self.in_channels
                            if i == 0 else self.conv_out_channels)
             padding = (self.conv_kernel_size - 1) // 2
-            self.convs.append(
-                ConvModule(
-                    in_channels,
-                    self.conv_out_channels,
-                    3,
-                    padding=padding,
-                    normalize=normalize,
-                    bias=self.with_bias))
+            if self.conv_to_res:
+                self.convs.append(
+                    ResBlock(
+                        in_channels,
+                        self.conv_out_channels,
+                        normalize=normalize))
+            else:
+                self.convs.append(
+                    ConvModule(
+                        in_channels,
+                        self.conv_out_channels,
+                        3,
+                        padding=padding,
+                        normalize=normalize,
+                        bias=self.with_bias))
         if self.upsample_method is None:
             self.upsample = None
         elif self.upsample_method == 'deconv':

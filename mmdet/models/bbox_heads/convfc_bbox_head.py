@@ -2,7 +2,7 @@ import torch.nn as nn
 
 from .bbox_head import BBoxHead
 from ..registry import HEADS
-from ..utils import ConvModule
+from ..utils import ConvModule, ResBlock
 
 
 @HEADS.register_module
@@ -24,6 +24,7 @@ class ConvFCBBoxHead(BBoxHead):
                  num_reg_fcs=0,
                  conv_out_channels=256,
                  fc_out_channels=1024,
+                 conv_to_res=False,
                  normalize=None,
                  *args,
                  **kwargs):
@@ -44,6 +45,7 @@ class ConvFCBBoxHead(BBoxHead):
         self.num_reg_fcs = num_reg_fcs
         self.conv_out_channels = conv_out_channels
         self.fc_out_channels = fc_out_channels
+        self.conv_to_res = conv_to_res
         self.normalize = normalize
         self.with_bias = normalize is None
 
@@ -92,17 +94,26 @@ class ConvFCBBoxHead(BBoxHead):
         # add branch specific conv layers
         branch_convs = nn.ModuleList()
         if num_branch_convs > 0:
-            for i in range(num_branch_convs):
+            num_blocks = (num_branch_convs//2 if self.conv_to_res
+                          else num_branch_convs)
+            for i in range(num_blocks):
                 conv_in_channels = (last_layer_dim
                                     if i == 0 else self.conv_out_channels)
-                branch_convs.append(
-                    ConvModule(
-                        conv_in_channels,
-                        self.conv_out_channels,
-                        3,
-                        padding=1,
-                        normalize=self.normalize,
-                        bias=self.with_bias))
+                if self.conv_to_res:
+                    branch_convs.append(
+                        ResBlock(
+                            conv_in_channels,
+                            self.conv_out_channels,
+                            normalize=self.normalize))
+                else:
+                    branch_convs.append(
+                        ConvModule(
+                            conv_in_channels,
+                            self.conv_out_channels,
+                            3,
+                            padding=1,
+                            normalize=self.normalize,
+                            bias=self.with_bias))
             last_layer_dim = self.conv_out_channels
         # add branch specific fc layers
         branch_fcs = nn.ModuleList()
