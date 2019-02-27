@@ -10,6 +10,10 @@ from ..registry import DETECTORS
 from mmdet.core import (assign_and_sample, bbox2roi, bbox2result, multi_apply,
                         merge_aug_masks)
 
+target_stds = [[0.1, 0.1, 0.2, 0.2],
+              [0.05, 0.05, 0.1, 0.1],
+              [0.033, 0.033, 0.067, 0.067]] 
+
 
 @DETECTORS.register_module
 class CascadeRCNN(BaseDetector, RPNTestMixin):
@@ -23,6 +27,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                  bbox_head=None,
                  mask_roi_extractor=None,
                  mask_head=None,
+                 shared_bbox=False,
                  single_mask=False,
                  train_cfg=None,
                  test_cfg=None,
@@ -33,6 +38,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
 
         self.num_stages = num_stages
         self.backbone = builder.build_backbone(backbone)
+        self.shared_bbox = shared_bbox
         self.single_mask = single_mask
 
         if neck is not None:
@@ -46,17 +52,25 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
         if bbox_head is not None:
             self.bbox_roi_extractor = nn.ModuleList()
             self.bbox_head = nn.ModuleList()
-            if not isinstance(bbox_roi_extractor, list):
-                bbox_roi_extractor = [
-                    bbox_roi_extractor for _ in range(num_stages)
-                ]
-            if not isinstance(bbox_head, list):
-                bbox_head = [bbox_head for _ in range(num_stages)]
-            assert len(bbox_roi_extractor) == len(bbox_head) == self.num_stages
-            for roi_extractor, head in zip(bbox_roi_extractor, bbox_head):
-                self.bbox_roi_extractor.append(
-                    builder.build_roi_extractor(roi_extractor))
-                self.bbox_head.append(builder.build_head(head))
+            if self.shared_bbox:
+                shared_roi_extractor =\
+                    builder.build_roi_extractor(bbox_roi_extractor)
+                shared_bbox_head = builder.build_head(bbox_head[0])
+                for _ in range(num_stages):
+                    self.bbox_roi_extractor.append(shared_roi_extractor)
+                    self.bbox_head.append(shared_bbox_head)
+            else:
+                if not isinstance(bbox_roi_extractor, list):
+                    bbox_roi_extractor = [
+                        bbox_roi_extractor for _ in range(num_stages)
+                    ]
+                if not isinstance(bbox_head, list):
+                    bbox_head = [bbox_head for _ in range(num_stages)]
+                assert len(bbox_roi_extractor) == len(bbox_head) == self.num_stages
+                for roi_extractor, head in zip(bbox_roi_extractor, bbox_head):
+                    self.bbox_roi_extractor.append(
+                        builder.build_roi_extractor(roi_extractor))
+                    self.bbox_head.append(builder.build_head(head))
 
         if mask_head is not None:
             self.mask_roi_extractor = nn.ModuleList()
@@ -156,6 +170,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
             # bbox head forward and loss
             bbox_roi_extractor = self.bbox_roi_extractor[i]
             bbox_head = self.bbox_head[i]
+            if self.shared_bbox:
+                bbox_head.target_stds = target_stds[i]
 
             rois = bbox2roi([res.bboxes for res in sampling_results])
             bbox_feats = bbox_roi_extractor(x[:bbox_roi_extractor.num_inputs],
