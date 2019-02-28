@@ -74,7 +74,7 @@ model = dict(
         num_convs=4,
         conv_to_res=False,
         in_channels=256,
-        conv_out_channels=246,
+        conv_out_channels=256,
         num_classes=81))
 # model training and testing settings
 train_cfg = dict(

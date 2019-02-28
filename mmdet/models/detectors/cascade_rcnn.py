@@ -233,6 +233,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
         for i in range(self.num_stages):
             bbox_roi_extractor = self.bbox_roi_extractor[i]
             bbox_head = self.bbox_head[i]
+            if self.shared_bbox:
+                bbox_head.target_stds = target_stds[i]
 
             bbox_feats = bbox_roi_extractor(
                 x[:len(bbox_roi_extractor.featmap_strides)], rois)
