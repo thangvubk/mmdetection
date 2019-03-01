@@ -256,15 +256,23 @@ def make_res_layer(block,
                    skip_last_relu=False):
     downsample = None
     if stride != 1 or inplanes != planes * block.expansion:
-        downsample = nn.Sequential(
-            nn.Conv2d(
+        if normalize is not None:
+            downsample = nn.Sequential(
+                nn.Conv2d(
+                    inplanes,
+                    planes * block.expansion,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False),
+                build_norm_layer(normalize, planes * block.expansion)[1],
+            )
+        else:
+            downsample = nn.Conv2d(
                 inplanes,
                 planes * block.expansion,
                 kernel_size=1,
                 stride=stride,
-                bias=False),
-            build_norm_layer(normalize, planes * block.expansion)[1],
-        )
+                bias=True)
 
     layers = []
     layers.append(
