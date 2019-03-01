@@ -1,8 +1,11 @@
 import torch.nn as nn
 
+from mmcv.cnn import constant_init, kaiming_init
+
 from .bbox_head import BBoxHead
 from ..registry import HEADS
-from ..utils import ConvModule, ResBlock
+from ..utils import ConvModule
+from ..backbones import BasicBlock, make_res_layer
 
 
 @HEADS.register_module
@@ -94,18 +97,18 @@ class ConvFCBBoxHead(BBoxHead):
         # add branch specific conv layers
         branch_convs = nn.ModuleList()
         if num_branch_convs > 0:
-            num_blocks = (num_branch_convs//2 if self.conv_to_res
-                          else num_branch_convs)
-            for i in range(num_blocks):
-                conv_in_channels = (last_layer_dim
-                                    if i == 0 else self.conv_out_channels)
-                if self.conv_to_res:
-                    branch_convs.append(
-                        ResBlock(
-                            conv_in_channels,
-                            self.conv_out_channels,
-                            normalize=self.normalize))
-                else:
+            if self.conv_to_res:
+                branch_convs = make_res_layer(
+                    BasicBlock,
+                    last_layer_dim,
+                    self.conv_out_channels,
+                    num_branch_convs//2,
+                    normalize=self.normalize,
+                    skip_last_relu=True)
+            else:
+                for i in range(num_branch_convs):
+                    conv_in_channels = (last_layer_dim
+                                        if i == 0 else self.conv_out_channels)
                     branch_convs.append(
                         ConvModule(
                             conv_in_channels,
@@ -138,6 +141,14 @@ class ConvFCBBoxHead(BBoxHead):
                 if isinstance(m, nn.Linear):
                     nn.init.xavier_uniform_(m.weight)
                     nn.init.constant_(m.bias, 0)
+        #for mod in self.modules():
+        #    if isinstance(mod, BasicBlock) and self.normalize is not None:
+        #        for m in mod.modules():
+        #            if isinstance(m, nn.Conv2d):
+        #                kaiming_init(m)
+        #            if isinstance(m, (nn.GroupNorm, nn.BatchNorm2d)):
+        #                constant_init(m, 1)
+        #        constant_init(mod.norm2, 0)
 
     def forward(self, x):
         # shared part

@@ -11,7 +11,7 @@ from ..registry import BACKBONES
 from ..utils import build_norm_layer
 
 
-def conv3x3(in_planes, out_planes, stride=1, dilation=1):
+def conv3x3(in_planes, out_planes, stride=1, dilation=1, bias=False):
     "3x3 convolution with padding"
     return nn.Conv2d(
         in_planes,
@@ -20,7 +20,7 @@ def conv3x3(in_planes, out_planes, stride=1, dilation=1):
         stride=stride,
         padding=dilation,
         dilation=dilation,
-        bias=False)
+        bias=bias)
 
 
 class BasicBlock(nn.Module):
@@ -35,22 +35,28 @@ class BasicBlock(nn.Module):
                  style='pytorch',
                  with_cp=False,
                  normalize=dict(type='BN'),
-                 dcn=None):
+                 dcn=None,
+                 skip_last_relu=False):
         super(BasicBlock, self).__init__()
         assert dcn is None, "Not implemented yet."
 
-        self.norm1_name, norm1 = build_norm_layer(normalize, planes, postfix=1)
-        self.norm2_name, norm2 = build_norm_layer(normalize, planes, postfix=2)
-
-        self.conv1 = conv3x3(inplanes, planes, stride, dilation)
-        self.add_module(self.norm1_name, norm1)
-        self.conv2 = conv3x3(planes, planes)
-        self.add_module(self.norm2_name, norm2)
+        if normalize is not None:
+            self.norm1_name, norm1 = build_norm_layer(normalize, planes, postfix=1)
+            self.norm2_name, norm2 = build_norm_layer(normalize, planes, postfix=2)
+            self.conv1 = conv3x3(inplanes, planes, stride, dilation)
+            self.add_module(self.norm1_name, norm1)
+            self.conv2 = conv3x3(planes, planes)
+            self.add_module(self.norm2_name, norm2)
+        else:
+            self.conv1 = conv3x3(inplanes, planes, stride, dilation, bias=True)
+            self.conv2 = conv3x3(planes, planes, bias=True)
 
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
         self.dilation = dilation
+        self.normalize = normalize
+        self.skip_last_relu = skip_last_relu
         assert not with_cp
 
     @property
@@ -63,19 +69,25 @@ class BasicBlock(nn.Module):
 
     def forward(self, x):
         identity = x
-
-        out = self.conv1(x)
-        out = self.norm1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.norm2(out)
+        
+        if self.normalize is not None:
+            out = self.conv1(x)
+            out = self.norm1(out)
+            out = self.relu(out)
+            out = self.conv2(out)
+            out = self.norm2(out)
+        else:
+            out = self.conv1(x)
+            out = self.relu(out)
+            out = self.conv2(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
 
         out += identity
-        out = self.relu(out)
+
+        if not self.skip_last_relu:
+            out = self.relu(out)
 
         return out
 
@@ -92,7 +104,8 @@ class Bottleneck(nn.Module):
                  style='pytorch',
                  with_cp=False,
                  normalize=dict(type='BN'),
-                 dcn=None):
+                 dcn=None,
+                 skip_last_relu=False):
         """Bottleneck block for ResNet.
         If style is "pytorch", the stride-two layer is the 3x3 conv layer,
         if it is "caffe", the stride-two layer is the first 1x1 conv layer.
@@ -173,6 +186,7 @@ class Bottleneck(nn.Module):
         self.dilation = dilation
         self.with_cp = with_cp
         self.normalize = normalize
+        self.skip_last_relu = skip_last_relu
 
     @property
     def norm1(self):
@@ -223,7 +237,8 @@ class Bottleneck(nn.Module):
         else:
             out = _inner_forward(x)
 
-        out = self.relu(out)
+        if not self.skip_last_relu:
+            out = self.relu(out)
 
         return out
 
@@ -237,7 +252,8 @@ def make_res_layer(block,
                    style='pytorch',
                    with_cp=False,
                    normalize=dict(type='BN'),
-                   dcn=None):
+                   dcn=None,
+                   skip_last_relu=False):
     downsample = None
     if stride != 1 or inplanes != planes * block.expansion:
         downsample = nn.Sequential(
@@ -261,7 +277,8 @@ def make_res_layer(block,
             style=style,
             with_cp=with_cp,
             normalize=normalize,
-            dcn=dcn))
+            dcn=dcn,
+            skip_last_relu=skip_last_relu))
     inplanes = planes * block.expansion
     for i in range(1, blocks):
         layers.append(
@@ -273,7 +290,8 @@ def make_res_layer(block,
                 style=style,
                 with_cp=with_cp,
                 normalize=normalize,
-                dcn=dcn))
+                dcn=dcn,
+                skip_last_relu=skip_last_relu))
 
     return nn.Sequential(*layers)
 

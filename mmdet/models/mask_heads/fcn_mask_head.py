@@ -4,9 +4,12 @@ import pycocotools.mask as mask_util
 import torch
 import torch.nn as nn
 
+from mmcv.cnn import constant_init, kaiming_init
+
 from ..registry import HEADS
-from ..utils import ConvModule, ResBlock
+from ..utils import ConvModule
 from mmdet.core import mask_cross_entropy, mask_target
+from ..backbones import BasicBlock, make_res_layer
 
 
 @HEADS.register_module
@@ -43,23 +46,25 @@ class FCNMaskHead(nn.Module):
         self.with_bias = normalize is None
 
         self.convs = nn.ModuleList()
-        num_blocks = num_convs//2 if conv_to_res else num_convs
-        for i in range(num_blocks):
-            in_channels = (self.in_channels
-                           if i == 0 else self.conv_out_channels)
-            padding = (self.conv_kernel_size - 1) // 2
-            if self.conv_to_res:
-                self.convs.append(
-                    ResBlock(
-                        in_channels,
-                        self.conv_out_channels,
-                        normalize=normalize))
-            else:
+        if conv_to_res:
+            assert conv_kernel_size == 3
+            self.convs = make_res_layer(
+                BasicBlock,
+                in_channels,
+                self.conv_out_channels,
+                num_convs//2,
+                normalize=normalize,
+                skip_last_relu=True)
+        else:
+            for i in range(num_convs):
+                in_channels = (self.in_channels
+                               if i == 0 else self.conv_out_channels)
+                padding = (self.conv_kernel_size - 1) // 2
                 self.convs.append(
                     ConvModule(
                         in_channels,
                         self.conv_out_channels,
-                        3,
+                        self.conv_kernel_size,
                         padding=padding,
                         normalize=normalize,
                         bias=self.with_bias))
@@ -87,6 +92,14 @@ class FCNMaskHead(nn.Module):
             nn.init.kaiming_normal_(
                 m.weight, mode='fan_out', nonlinearity='relu')
             nn.init.constant_(m.bias, 0)
+        #for mod in self.modules():
+        #    if isinstance(mod, BasicBlock) and self.normalize is not None:
+        #        for m in mod.modules():
+        #            if isinstance(m, nn.Conv2d):
+        #                kaiming_init(m)
+        #            if isinstance(m, (nn.GroupNorm, nn.BatchNorm2d)):
+        #                constant_init(m, 1)
+        #        constant_init(mod.norm2, 0)
 
     def forward(self, x):
         for conv in self.convs:
