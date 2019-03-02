@@ -26,7 +26,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                  single_mask=False,
                  train_cfg=None,
                  test_cfg=None,
-                 pretrained=None):
+                 pretrained=None,
+                 interleave=False):
         assert bbox_roi_extractor is not None
         assert bbox_head is not None
         super(CascadeRCNN, self).__init__()
@@ -34,6 +35,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
         self.num_stages = num_stages
         self.backbone = builder.build_backbone(backbone)
         self.single_mask = single_mask
+        self.interleave = interleave
 
         if neck is not None:
             self.neck = builder.build_neck(neck)
@@ -169,6 +171,25 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                 losses['s{}.{}'.format(i, name)] = (value * lw if
                                                     'loss' in name else value)
 
+            if self.interleave:
+                # refine bboxes
+                pos_is_gts = [res.pos_is_gt for res in sampling_results]
+                roi_labels = bbox_targets[0]  # bbox_targets is a tuple
+                with torch.no_grad():
+                    proposal_list = bbox_head.refine_bboxes(
+                        rois, roi_labels, bbox_pred, pos_is_gts, img_meta)
+                
+                # resample
+                assert len(self.train_cfg.rcnn) == self.num_stages + 1
+                rcnn_train_cfg = self.train_cfg.rcnn[i + 1]
+                assign_results, sampling_results = multi_apply(
+                    assign_and_sample,
+                    proposal_list,
+                    gt_bboxes,
+                    gt_bboxes_ignore,
+                    gt_labels,
+                    cfg=rcnn_train_cfg)
+
             # mask head forward and loss
             if self.with_mask:
                 mask_roi_extractor = self.mask_roi_extractor[i]
@@ -188,8 +209,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                                                         if 'loss' in name else
                                                         value)
 
-            # refine bboxes
-            if i < self.num_stages - 1:
+            if not self.interleave and i < self.num_stages - 1:
+                # refine bboxes
                 pos_is_gts = [res.pos_is_gt for res in sampling_results]
                 roi_labels = bbox_targets[0]  # bbox_targets is a tuple
                 with torch.no_grad():
