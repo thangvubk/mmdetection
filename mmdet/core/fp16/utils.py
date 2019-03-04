@@ -29,7 +29,7 @@ def set_grad(fp16_net, fp32_weight):
 
 # convert batch norm layer to fp32
 def bn_convert_float(module):
-    if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+    if isinstance(module, (nn.BatchNorm2d, nn.GroupNorm)):
         module.float()
     for child in module.children():
         bn_convert_float(child)

@@ -159,7 +159,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
             bbox_roi_extractor = self.bbox_roi_extractor[i]
             bbox_head = self.bbox_head[i]
 
-            rois = bbox2roi([res.bboxes for res in sampling_results])
+            rois = bbox2roi(
+                [res.bboxes for res in sampling_results]).type_as(x[0])
             bbox_feats = bbox_roi_extractor(x[:bbox_roi_extractor.num_inputs],
                                             rois)
             cls_score, bbox_pred = bbox_head(bbox_feats)
@@ -178,6 +179,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                 with torch.no_grad():
                     proposal_list = bbox_head.refine_bboxes(
                         rois, roi_labels, bbox_pred, pos_is_gts, img_meta)
+                    proposal_list = [item.type_as(gt_bboxes[0])
+                                     for item in proposal_list]
                 
                 # resample
                 assert len(self.train_cfg.rcnn) == self.num_stages + 1
@@ -195,7 +198,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                 mask_roi_extractor = self.mask_roi_extractor[i]
                 mask_head = self.mask_head[i]
                 pos_rois = bbox2roi(
-                    [res.pos_bboxes for res in sampling_results])
+                    [res.pos_bboxes for res in sampling_results]).type_as(x[0])
                 mask_feats = mask_roi_extractor(
                     x[:mask_roi_extractor.num_inputs], pos_rois)
                 mask_pred = mask_head(mask_feats)
@@ -216,7 +219,8 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                 with torch.no_grad():
                     proposal_list = bbox_head.refine_bboxes(
                         rois, roi_labels, bbox_pred, pos_is_gts, img_meta)
-
+                    proposal_list = [item.type_as(gt_bboxes[0])
+                                     for item in proposal_list]
         return losses
 
     def simple_test(self, img, img_meta, proposals=None, rescale=False):
@@ -234,7 +238,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
         ms_scores = []
         rcnn_test_cfg = self.test_cfg.rcnn
 
-        rois = bbox2roi(proposal_list)
+        rois = bbox2roi(proposal_list).type_as(x[0])
         for i in range(self.num_stages):
             bbox_roi_extractor = self.bbox_roi_extractor[i]
             bbox_head = self.bbox_head[i]
@@ -267,7 +271,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                     else:
                         _bboxes = (det_bboxes[:, :4] * scale_factor
                                    if rescale else det_bboxes)
-                        mask_rois = bbox2roi([_bboxes])
+                        mask_rois = bbox2roi([_bboxes]).type_as(x[0])
                         mask_feats = mask_roi_extractor(
                             x[:len(mask_roi_extractor.featmap_strides)],
                             mask_rois)
@@ -303,7 +307,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
             else:
                 _bboxes = (det_bboxes[:, :4] * scale_factor
                            if rescale else det_bboxes)
-                mask_rois = bbox2roi([_bboxes])
+                mask_rois = bbox2roi([_bboxes]).type_as(x[0])
                 aug_masks = []
                 mask_stages = 1 if self.single_mask else self.num_stages
                 for i in range(mask_stages):
