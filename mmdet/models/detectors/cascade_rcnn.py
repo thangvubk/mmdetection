@@ -158,6 +158,22 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                 losses['s{}.{}'.format(i, name)] = (value * lw if
                                                     'loss' in name else value)
 
+            # interleave
+            pos_is_gts = [res.pos_is_gt for res in sampling_results]
+            roi_labels = bbox_targets[0]  # bbox_targets is a tuple
+            with torch.no_grad():
+                proposal_list = bbox_head.refine_bboxes(
+                    rois, roi_labels, bbox_pred, pos_is_gts, img_meta)
+            
+            # assign gts and sample proposals
+            assign_results, sampling_results = multi_apply(
+                assign_and_sample,
+                proposal_list,
+                gt_bboxes,
+                gt_bboxes_ignore,
+                gt_labels,
+                cfg=rcnn_train_cfg)
+
             # mask head forward and loss
             if self.with_mask:
                 mask_roi_extractor = self.mask_roi_extractor[i]
@@ -166,7 +182,11 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                     [res.pos_bboxes for res in sampling_results])
                 mask_feats = mask_roi_extractor(
                     x[:mask_roi_extractor.num_inputs], pos_rois)
-                mask_pred = mask_head(mask_feats)
+                mask_feats_bb = mask_feats
+                for j in range(i):
+                    mask_feats, _ = self.mask_head[j](mask_feats)
+                    mask_feats = mask_feats + mask_feats_bb
+                _, mask_pred = mask_head(mask_feats)
                 mask_targets = mask_head.get_target(sampling_results, gt_masks,
                                                     rcnn_train_cfg)
                 pos_labels = torch.cat(
@@ -277,7 +297,12 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                     mask_roi_extractor = self.mask_roi_extractor[i]
                     mask_feats = mask_roi_extractor(
                         x[:len(mask_roi_extractor.featmap_strides)], mask_rois)
-                    mask_pred = self.mask_head[i](mask_feats)
+                    #mask_pred = self.mask_head[i](mask_feats)
+                    mask_feats_bb = mask_feats
+                    for j in range(i):
+                        mask_feats, _ = self.mask_head[j](mask_feats)
+                        mask_feats = mask_feats + mask_feats_bb
+                    _, mask_pred = self.mask_head[i](mask_feats)
                     aug_masks.append(mask_pred.sigmoid().cpu().numpy())
                 merged_masks = merge_aug_masks(aug_masks,
                                                [img_meta] * self.num_stages,

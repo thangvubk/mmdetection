@@ -53,6 +53,13 @@ class FCNMaskHead(nn.Module):
                     padding=padding,
                     normalize=normalize,
                     bias=self.with_bias))
+        self.bridge_conv = ConvModule(
+            self.conv_out_channels,
+            self.conv_out_channels,
+            1,
+            activation=None,
+            normalize=normalize,
+            bias=self.with_bias)
         if self.upsample_method is None:
             self.upsample = None
         elif self.upsample_method == 'deconv':
@@ -81,12 +88,13 @@ class FCNMaskHead(nn.Module):
     def forward(self, x):
         for conv in self.convs:
             x = conv(x)
+        conv_feat = self.bridge_conv(x)
         if self.upsample is not None:
             x = self.upsample(x)
             if self.upsample_method == 'deconv':
                 x = self.relu(x)
         mask_pred = self.conv_logits(x)
-        return mask_pred
+        return conv_feat, mask_pred
 
     def get_target(self, sampling_results, gt_masks, rcnn_train_cfg):
         pos_proposals = [res.pos_bboxes for res in sampling_results]
