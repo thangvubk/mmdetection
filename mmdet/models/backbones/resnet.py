@@ -125,10 +125,11 @@ class Bottleneck(nn.Module):
             self.conv1_stride = stride
             self.conv2_stride = 1
 
-        self.norm1_name, norm1 = build_norm_layer(normalize, planes, postfix=1)
-        self.norm2_name, norm2 = build_norm_layer(normalize, planes, postfix=2)
-        self.norm3_name, norm3 = build_norm_layer(
-            normalize, planes * self.expansion, postfix=3)
+        if normalize is not None:
+            self.norm1_name, norm1 = build_norm_layer(normalize, planes, postfix=1)
+            self.norm2_name, norm2 = build_norm_layer(normalize, planes, postfix=2)
+            self.norm3_name, norm3 = build_norm_layer(
+                normalize, planes * self.expansion, postfix=3)
 
         self.conv1 = nn.Conv2d(
             inplanes,
@@ -136,7 +137,8 @@ class Bottleneck(nn.Module):
             kernel_size=1,
             stride=self.conv1_stride,
             bias=False)
-        self.add_module(self.norm1_name, norm1)
+        if normalize is not None:
+            self.add_module(self.norm1_name, norm1)
         fallback_on_stride = False
         self.with_modulated_dcn = False
         if self.with_dcn:
@@ -175,10 +177,12 @@ class Bottleneck(nn.Module):
                 dilation=dilation,
                 deformable_groups=deformable_groups,
                 bias=False)
-        self.add_module(self.norm2_name, norm2)
+        if normalize is not None:
+            self.add_module(self.norm2_name, norm2)
         self.conv3 = nn.Conv2d(
             planes, planes * self.expansion, kernel_size=1, bias=False)
-        self.add_module(self.norm3_name, norm3)
+        if normalize is not None:
+            self.add_module(self.norm3_name, norm3)
 
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
@@ -206,7 +210,8 @@ class Bottleneck(nn.Module):
             identity = x
 
             out = self.conv1(x)
-            out = self.norm1(out)
+            if self.normalize is not None:
+                out = self.norm1(out)
             out = self.relu(out)
 
             if not self.with_dcn:
@@ -219,11 +224,13 @@ class Bottleneck(nn.Module):
             else:
                 offset = self.conv2_offset(out)
                 out = self.conv2(out, offset)
-            out = self.norm2(out)
+            if self.normalize is not None:
+                out = self.norm2(out)
             out = self.relu(out)
 
             out = self.conv3(out)
-            out = self.norm3(out)
+            if self.normalize is not None:
+                out = self.norm3(out)
 
             if self.downsample is not None:
                 identity = self.downsample(x)

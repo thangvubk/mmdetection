@@ -9,7 +9,7 @@ from mmcv.cnn import constant_init, kaiming_init
 from ..registry import HEADS
 from ..utils import ConvModule
 from mmdet.core import mask_cross_entropy, mask_target
-from ..backbones import BasicBlock, make_res_layer
+from ..backbones import BasicBlock, make_res_layer, Bottleneck
 
 
 @HEADS.register_module
@@ -49,7 +49,7 @@ class FCNMaskHead(nn.Module):
         if conv_to_res:
             assert conv_kernel_size == 3
             self.convs = make_res_layer(
-                BasicBlock,
+                Bottleneck,
                 in_channels,
                 self.conv_out_channels,
                 num_convs//2,
@@ -71,6 +71,7 @@ class FCNMaskHead(nn.Module):
         if self.upsample_method is None:
             self.upsample = None
         elif self.upsample_method == 'deconv':
+            self.bridge_conv = nn.Conv2d(self.conv_out_channels*4, self.conv_out_channels, 1)
             self.upsample = nn.ConvTranspose2d(
                 self.conv_out_channels,
                 self.conv_out_channels,
@@ -104,6 +105,7 @@ class FCNMaskHead(nn.Module):
     def forward(self, x):
         for conv in self.convs:
             x = conv(x)
+        x = self.relu(self.bridge_conv(x))
         if self.upsample is not None:
             x = self.upsample(x)
             if self.upsample_method == 'deconv':
