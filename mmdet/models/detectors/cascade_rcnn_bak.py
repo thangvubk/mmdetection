@@ -182,10 +182,10 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                     [res.pos_bboxes for res in sampling_results])
                 mask_feats = mask_roi_extractor(
                     x[:mask_roi_extractor.num_inputs], pos_rois)
-                mask_feats_bb = mask_feats
+                mask_feats_temp = mask_feats
                 for j in range(i):
                     mask_feats, _ = self.mask_head[j](mask_feats)
-                    mask_feats = mask_feats + mask_feats_bb
+                    mask_feats = mask_feats + mask_feats_temp
                 _, mask_pred = mask_head(mask_feats)
                 mask_targets = mask_head.get_target(sampling_results, gt_masks,
                                                     rcnn_train_cfg)
@@ -198,12 +198,12 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                                                         value)
 
             # refine bboxes
-            #if i < self.num_stages - 1:
-            #    pos_is_gts = [res.pos_is_gt for res in sampling_results]
-            #    roi_labels = bbox_targets[0]  # bbox_targets is a tuple
-            #    with torch.no_grad():
-            #        proposal_list = bbox_head.refine_bboxes(
-            #            rois, roi_labels, bbox_pred, pos_is_gts, img_meta)
+            if i < self.num_stages - 1:
+                pos_is_gts = [res.pos_is_gt for res in sampling_results]
+                roi_labels = bbox_targets[0]  # bbox_targets is a tuple
+                with torch.no_grad():
+                    proposal_list = bbox_head.refine_bboxes(
+                        rois, roi_labels, bbox_pred, pos_is_gts, img_meta)
 
         return losses
 
@@ -293,15 +293,23 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                            if rescale else det_bboxes)
                 mask_rois = bbox2roi([_bboxes])
                 aug_masks = []
-                mask_roi_extractor = self.mask_roi_extractor[-1]
-                mask_feats = mask_roi_extractor(
-                    x[:len(mask_roi_extractor.featmap_strides)], mask_rois)
-                #mask_pred = self.mask_head[i](mask_feats)
-                mask_feats_bb = mask_feats
                 for i in range(self.num_stages):
-                    mask_feats, mask_pred = self.mask_head[i](mask_feats)
-                    mask_feats = mask_feats + mask_feats_bb
-                    #_, mask_pred = self.mask_head[i](mask_feats)
+                    mask_roi_extractor = self.mask_roi_extractor[i]
+                    mask_feats = mask_roi_extractor(
+                        x[:len(mask_roi_extractor.featmap_strides)], mask_rois)
+                    #mask_pred = self.mask_head[i](mask_feats)
+                    #import pdb; pdb.set_trace()
+                    mask_feats_temp = mask_feats
+                    last_pred = None
+                    for j in range(i):
+                        mask_feats, mask_pred = self.mask_head[j](mask_feats)
+                        mask_feats = mask_feats + mask_feats_temp
+                        if last_pred is not None:
+                            mask_pred = (mask_pred + last_pred)
+                        last_pred = mask_pred
+                    _, mask_pred = self.mask_head[i](mask_feats)
+                    if last_pred is not None:
+                        mask_pred = (mask_pred + last_pred)
                     aug_masks.append(mask_pred.sigmoid().cpu().numpy())
                 merged_masks = merge_aug_masks(aug_masks,
                                                [img_meta] * self.num_stages,
