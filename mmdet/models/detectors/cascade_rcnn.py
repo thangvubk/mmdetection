@@ -193,7 +193,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                     [res.pos_gt_labels for res in sampling_results])
                 loss_mask = mask_head.loss(mask_pred, mask_targets, pos_labels)
                 for name, value in loss_mask.items():
-                    losses['s{}.{}'.format(i, name)] = (value * lw
+                    losses['s{}.{}'.format(i, name)] = (value * 0.75
                                                         if 'loss' in name else
                                                         value)
 
