@@ -51,7 +51,7 @@ class FCNMaskHead(nn.Module):
             self.convs = make_res_layer(
                 Bottleneck,
                 in_channels,
-                self.conv_out_channels,
+                self.conv_out_channels//2,
                 num_convs//2,
                 normalize=normalize,
                 skip_last_relu=True)
@@ -71,7 +71,7 @@ class FCNMaskHead(nn.Module):
         if self.upsample_method is None:
             self.upsample = None
         elif self.upsample_method == 'deconv':
-            self.bridge_conv = nn.Conv2d(self.conv_out_channels*4, self.conv_out_channels, 1)
+            self.bridge_conv = nn.Conv2d(self.conv_out_channels*2, self.conv_out_channels, 1)
             self.upsample = nn.ConvTranspose2d(
                 self.conv_out_channels,
                 self.conv_out_channels,
