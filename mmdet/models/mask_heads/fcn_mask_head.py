@@ -85,15 +85,21 @@ class FCNMaskHead(nn.Module):
                 m.weight, mode='fan_out', nonlinearity='relu')
             nn.init.constant_(m.bias, 0)
 
-    def forward(self, x):
+    def forward(self, x, get_conv_only=False, get_pred_only=False):
+        assert not (get_conv_only and get_pred_only)
         for conv in self.convs:
             x = conv(x)
-        conv_feat = self.bridge_conv(x)
+        if not get_pred_only:
+            conv_feat = self.bridge_conv(x)
+        if get_conv_only:
+            return conv_feat
         if self.upsample is not None:
             x = self.upsample(x)
             if self.upsample_method == 'deconv':
                 x = self.relu(x)
         mask_pred = self.conv_logits(x)
+        if get_pred_only:
+            return mask_pred
         return conv_feat, mask_pred
 
     def get_target(self, sampling_results, gt_masks, rcnn_train_cfg):
