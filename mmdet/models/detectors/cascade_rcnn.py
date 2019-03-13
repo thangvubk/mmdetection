@@ -184,9 +184,9 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                     x[:mask_roi_extractor.num_inputs], pos_rois)
                 mask_feats_bb = mask_feats
                 for j in range(i):
-                    mask_feats, _ = self.mask_head[j](mask_feats)
+                    mask_feats = self.mask_head[j](mask_feats, get_conv_only=True)
                     mask_feats = mask_feats + mask_feats_bb
-                _, mask_pred = mask_head(mask_feats)
+                mask_pred = mask_head(mask_feats, get_pred_only=True)
                 mask_targets = mask_head.get_target(sampling_results, gt_masks,
                                                     rcnn_train_cfg)
                 pos_labels = torch.cat(
