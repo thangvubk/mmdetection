@@ -113,6 +113,7 @@ class Bottleneck(nn.Module):
         super(Bottleneck, self).__init__()
         assert style in ['pytorch', 'caffe']
         assert dcn is None or isinstance(dcn, dict)
+        with_bias = True if normalize is None else False
         self.inplanes = inplanes
         self.planes = planes
         self.normalize = normalize
@@ -136,7 +137,7 @@ class Bottleneck(nn.Module):
             planes,
             kernel_size=1,
             stride=self.conv1_stride,
-            bias=False)
+            bias=with_bias)
         if normalize is not None:
             self.add_module(self.norm1_name, norm1)
         fallback_on_stride = False
@@ -152,7 +153,7 @@ class Bottleneck(nn.Module):
                 stride=self.conv2_stride,
                 padding=dilation,
                 dilation=dilation,
-                bias=False)
+                bias=with_bias)
         else:
             deformable_groups = dcn.get('deformable_groups', 1)
             if not self.with_modulated_dcn:
@@ -176,11 +177,11 @@ class Bottleneck(nn.Module):
                 padding=dilation,
                 dilation=dilation,
                 deformable_groups=deformable_groups,
-                bias=False)
+                bias=with_bias)
         if normalize is not None:
             self.add_module(self.norm2_name, norm2)
         self.conv3 = nn.Conv2d(
-            planes, planes * self.expansion, kernel_size=1, bias=False)
+            planes, planes * self.expansion, kernel_size=1, bias=with_bias)
         if normalize is not None:
             self.add_module(self.norm3_name, norm3)
 
