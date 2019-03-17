@@ -181,7 +181,7 @@ class CascadeRCNN(BaseDetector, RPNTestMixin):
                 
                 # resample
                 assert len(self.train_cfg.rcnn) == self.num_stages + 1
-                rcnn_train_cfg = self.train_cfg.rcnn[i + 1]
+                rcnn_train_cfg = self.train_cfg.rcnn[i]
                 assign_results, sampling_results = multi_apply(
                     assign_and_sample,
                     proposal_list,
