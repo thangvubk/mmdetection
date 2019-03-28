@@ -8,7 +8,9 @@ from mmcv.cnn import normal_init
 from mmdet.core import (AnchorGenerator, anchor_target, delta2bbox,
                         multi_apply, weighted_cross_entropy, weighted_smoothl1,
                         weighted_binary_cross_entropy,
-                        weighted_sigmoid_focal_loss, multiclass_nms)
+                        weighted_sigmoid_focal_loss, multiclass_nms,
+                        delta2offset)
+from mmdet.ops import DeformConv
 from ..registry import HEADS
 
 
@@ -57,10 +59,16 @@ class AnchorHead(nn.Module):
         self.use_focal_loss = use_focal_loss
 
         self.anchor_generators = []
+        self.psudo_anchor_generators = []  # just for taking centers
         for anchor_base in self.anchor_base_sizes:
             self.anchor_generators.append(
                 AnchorGenerator(anchor_base, anchor_scales, anchor_ratios))
 
+            # psudo anchor take only ratio of 1.0
+            self.psudo_anchor_generators.append(
+                AnchorGenerator(anchor_base, anchor_scales, [1.0]))
+
+        self.num_psudo_anchors = len(self.anchor_scales)
         self.num_anchors = len(self.anchor_ratios) * len(self.anchor_scales)
         if self.use_sigmoid_cls:
             self.cls_out_channels = self.num_classes - 1
@@ -70,6 +78,13 @@ class AnchorHead(nn.Module):
         self._init_layers()
 
     def _init_layers(self):
+        self.conv_offset = nn.Conv2d(self.feat_channels,
+                                     2, 1)
+        self.offset_adapt = DeformConv(self.feat_channels,
+                                       self.feat_channels,
+                                       1)
+        self.center_conv_cls = nn.Conv2d(self.feat_channels,
+                                  self.cls_out_channels, 1)
         self.conv_cls = nn.Conv2d(self.feat_channels,
                                   self.num_anchors * self.cls_out_channels, 1)
         self.conv_reg = nn.Conv2d(self.feat_channels, self.num_anchors * 4, 1)
@@ -79,14 +94,18 @@ class AnchorHead(nn.Module):
         normal_init(self.conv_reg, std=0.01)
 
     def forward_single(self, x):
-        cls_score = self.conv_cls(x)
-        bbox_pred = self.conv_reg(x)
-        return cls_score, bbox_pred
+        ctr_cls_score = self.center_conv_cls(x)
+        delta = self.conv_offset(x)
+        offset_at_feature = delta*self.anchor_scales[0]
+        x_adapt = self.offset_adapt(x, offset_at_feature)
+        cls_score = self.conv_cls(x_adapt)
+        bbox_pred = self.conv_reg(x_adapt)
+        return delta, ctr_cls_score, cls_score, bbox_pred
 
     def forward(self, feats):
         return multi_apply(self.forward_single, feats)
 
-    def get_anchors(self, featmap_sizes, img_metas):
+    def get_anchors(self, featmap_sizes, img_metas, offsets=None):
         """Get anchors according to feature map sizes.
 
         Args:
@@ -99,14 +118,16 @@ class AnchorHead(nn.Module):
         num_imgs = len(img_metas)
         num_levels = len(featmap_sizes)
 
-        # since feature map sizes of all images are the same, we only compute
-        # anchors for one time
-        multi_level_anchors = []
-        for i in range(num_levels):
-            anchors = self.anchor_generators[i].grid_anchors(
-                featmap_sizes[i], self.anchor_strides[i])
-            multi_level_anchors.append(anchors)
-        anchor_list = [multi_level_anchors for _ in range(num_imgs)]
+        assert num_imgs == len(offsets[0])
+        anchor_list = []
+        for img in range(num_imgs):
+            multi_level_anchors = []
+            for i in range(num_levels):
+                offset = offsets[i] if offsets is not None else None
+                anchors = self.anchor_generators[i].grid_anchors(
+                    featmap_sizes[i], self.anchor_strides[i], offset=offset[img])
+                multi_level_anchors.append(anchors)
+            anchor_list.append(multi_level_anchors)
 
         # for each image, we compute valid flags of multi level anchors
         valid_flag_list = []
@@ -124,6 +145,46 @@ class AnchorHead(nn.Module):
             valid_flag_list.append(multi_level_flags)
 
         return anchor_list, valid_flag_list
+    
+    def get_psudo_anchors(self, featmap_sizes, img_metas):
+        """Get anchors according to feature map sizes.
+
+        Args:
+            featmap_sizes (list[tuple]): Multi-level feature map sizes.
+            img_metas (list[dict]): Image meta info.
+
+        Returns:
+            tuple: anchors of each image, valid flags of each image
+        """
+        num_imgs = len(img_metas)
+        num_levels = len(featmap_sizes)
+
+        # since feature map sizes of all images are the same, we only compute
+        # anchors for one time
+        multi_level_anchors = []
+        for i in range(num_levels):
+            anchors = self.psudo_anchor_generators[i].grid_anchors(
+                featmap_sizes[i], self.anchor_strides[i])
+            multi_level_anchors.append(anchors)
+        anchor_list = [multi_level_anchors for _ in range(num_imgs)]
+
+        # for each image, we compute valid flags of multi level anchors
+        valid_flag_list = []
+        for img_id, img_meta in enumerate(img_metas):
+            multi_level_flags = []
+            for i in range(num_levels):
+                anchor_stride = self.anchor_strides[i]
+                feat_h, feat_w = featmap_sizes[i]
+                h, w, _ = img_meta['pad_shape']
+                valid_feat_h = min(int(np.ceil(h / anchor_stride)), feat_h)
+                valid_feat_w = min(int(np.ceil(w / anchor_stride)), feat_w)
+                flags = self.psudo_anchor_generators[i].valid_flags(
+                    (feat_h, feat_w), (valid_feat_h, valid_feat_w))
+                multi_level_flags.append(flags)
+            valid_flag_list.append(multi_level_flags)
+
+        return anchor_list, valid_flag_list
+
 
     def loss_single(self, cls_score, bbox_pred, labels, label_weights,
                     bbox_targets, bbox_weights, num_total_samples, cfg):
@@ -169,15 +230,99 @@ class AnchorHead(nn.Module):
             avg_factor=num_total_samples)
         return loss_cls, loss_reg
 
-    def loss(self, cls_scores, bbox_preds, gt_bboxes, gt_labels, img_metas,
-             cfg):
+    def center_loss_single(self, cls_score, bbox_pred, labels, label_weights,
+                    bbox_targets, bbox_weights, num_total_samples, cfg):
+        # classification loss
+        if self.use_sigmoid_cls:
+            labels = labels.reshape(-1, self.cls_out_channels)
+            label_weights = label_weights.reshape(-1, self.cls_out_channels)
+        else:
+            labels = labels.reshape(-1)
+            label_weights = label_weights.reshape(-1)
+        cls_score = cls_score.permute(0, 2, 3, 1).reshape(
+            -1, self.cls_out_channels)
+        if self.use_sigmoid_cls:
+            if self.use_focal_loss:
+                cls_criterion = weighted_sigmoid_focal_loss
+            else:
+                cls_criterion = weighted_binary_cross_entropy
+        else:
+            if self.use_focal_loss:
+                raise NotImplementedError
+            else:
+                cls_criterion = weighted_cross_entropy
+        if self.use_focal_loss:
+            loss_cls = cls_criterion(
+                cls_score,
+                labels,
+                label_weights,
+                gamma=cfg.gamma,
+                alpha=cfg.alpha,
+                avg_factor=num_total_samples)
+        else:
+            loss_cls = cls_criterion(
+                cls_score, labels, label_weights, avg_factor=num_total_samples)
+        # regression loss
+        bbox_targets = bbox_targets.reshape(-1, 4)[:, :2]
+        bbox_weights = bbox_weights.reshape(-1, 4)[:, :2]
+        bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(-1, 2)
+        loss_reg = weighted_smoothl1(
+            bbox_pred,
+            bbox_targets,
+            bbox_weights,
+            beta=cfg.smoothl1_beta,
+            avg_factor=num_total_samples)
+        return loss_cls, loss_reg
+
+    def loss(self, deltas, ctr_cls_scores,
+             cls_scores, bbox_preds, gt_bboxes, gt_labels,
+             img_metas, cfg):
+
+
         featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
         assert len(featmap_sizes) == len(self.anchor_generators)
 
-        anchor_list, valid_flag_list = self.get_anchors(
+        psudo_anchor_list, psudo_valid_flag_list = self.get_psudo_anchors(
             featmap_sizes, img_metas)
+
+        #import pdb; pdb.set_trace()
+
         sampling = False if self.use_focal_loss else True
         label_channels = self.cls_out_channels if self.use_sigmoid_cls else 1
+
+        psudo_cls_reg_targets = anchor_target(
+            psudo_anchor_list,
+            psudo_valid_flag_list,
+            gt_bboxes,
+            img_metas,
+            self.target_means,
+            self.target_stds,
+            cfg[0],
+            gt_labels_list=gt_labels,
+            label_channels=label_channels,
+            sampling=sampling)
+        if psudo_cls_reg_targets is None:
+            return None
+
+        (labels_list, label_weights_list, bbox_targets_list, bbox_weights_list,
+         num_total_pos, num_total_neg, all_pos_flags_list) = psudo_cls_reg_targets
+        num_total_samples = (num_total_pos if self.use_focal_loss else
+                             num_total_pos + num_total_neg)
+        center_losses_cls, center_losses_reg = multi_apply(
+            self.center_loss_single,
+            ctr_cls_scores,
+            deltas,
+            labels_list,
+            label_weights_list,
+            bbox_targets_list,
+            bbox_weights_list,
+            num_total_samples=num_total_samples,
+            cfg=cfg[0])
+
+        offsets = [delta2offset(delta, self.anchor_scales[0] * stride, pos_flags)
+                   for delta, stride, pos_flags in zip(deltas, self.anchor_strides, all_pos_flags_list)]
+        anchor_list, valid_flag_list = self.get_anchors(
+            featmap_sizes, img_metas, offsets=offsets)
         cls_reg_targets = anchor_target(
             anchor_list,
             valid_flag_list,
@@ -185,14 +330,14 @@ class AnchorHead(nn.Module):
             img_metas,
             self.target_means,
             self.target_stds,
-            cfg,
+            cfg[1],
             gt_labels_list=gt_labels,
             label_channels=label_channels,
             sampling=sampling)
         if cls_reg_targets is None:
             return None
         (labels_list, label_weights_list, bbox_targets_list, bbox_weights_list,
-         num_total_pos, num_total_neg) = cls_reg_targets
+         num_total_pos, num_total_neg, _) = cls_reg_targets
         num_total_samples = (num_total_pos if self.use_focal_loss else
                              num_total_pos + num_total_neg)
         losses_cls, losses_reg = multi_apply(
@@ -204,19 +349,28 @@ class AnchorHead(nn.Module):
             bbox_targets_list,
             bbox_weights_list,
             num_total_samples=num_total_samples,
-            cfg=cfg)
-        return dict(loss_cls=losses_cls, loss_reg=losses_reg)
+            cfg=cfg[1])
+        return dict(loss_center=center_losses_cls,
+                    loss_offset=center_losses_reg,
+                    loss_cls=losses_cls,
+                    loss_reg=losses_reg)
 
-    def get_bboxes(self, cls_scores, bbox_preds, img_metas, cfg,
+    def get_bboxes(self, deltas, ctr_cls_scores,
+                   cls_scores, bbox_preds, img_metas, cfg,
                    rescale=False):
+        #import pdb; pdb.set_trace()
         assert len(cls_scores) == len(bbox_preds)
         num_levels = len(cls_scores)
-
+        offsets = [delta2offset(delta, self.anchor_scales[0] * stride)
+                   for delta, stride in zip(deltas, self.anchor_strides)]
+        
         mlvl_anchors = [
             self.anchor_generators[i].grid_anchors(cls_scores[i].size()[-2:],
-                                                   self.anchor_strides[i])
+                                                   self.anchor_strides[i],
+                                                   offset=offsets[i][0])
             for i in range(num_levels)
         ]
+
         result_list = []
         for img_id in range(len(img_metas)):
             cls_score_list = [

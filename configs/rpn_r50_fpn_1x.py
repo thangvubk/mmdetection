@@ -26,23 +26,41 @@ model = dict(
         use_sigmoid_cls=True))
 # model training and testing settings
 train_cfg = dict(
-    rpn=dict(
-        assigner=dict(
-            type='MaxIoUAssigner',
-            pos_iou_thr=0.7,
-            neg_iou_thr=0.3,
-            min_pos_iou=0.3,
-            ignore_iof_thr=-1),
-        sampler=dict(
-            type='RandomSampler',
-            num=256,
-            pos_fraction=0.5,
-            neg_pos_ub=-1,
-            add_gt_as_proposals=False),
-        allowed_border=0,
-        pos_weight=-1,
-        smoothl1_beta=1 / 9.0,
-        debug=False))
+    rpn=[
+        dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.5,
+                neg_iou_thr=0.3,
+                min_pos_iou=0.3,
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RandomSampler',
+                num=256,
+                pos_fraction=0.5,
+                neg_pos_ub=-1,
+                add_gt_as_proposals=False),
+            allowed_border=0,
+            pos_weight=-1,
+            smoothl1_beta=1 / 9.0,
+            debug=False),
+        dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.7,
+                neg_iou_thr=0.3,
+                min_pos_iou=0.3,
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RandomSampler',
+                num=256,
+                pos_fraction=0.5,
+                neg_pos_ub=-1,
+                add_gt_as_proposals=False),
+            allowed_border=0,
+            pos_weight=-1,
+            smoothl1_beta=1 / 9.0,
+            debug=False)])
 test_cfg = dict(
     rpn=dict(
         nms_across_levels=False,
@@ -108,7 +126,7 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type='TextLoggerHook'),
-        # dict(type='TensorboardLoggerHook')
+        dict(type='TensorboardLoggerHook')
     ])
 # yapf:enable
 # runtime settings

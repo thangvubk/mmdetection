@@ -39,8 +39,8 @@ class RPN(BaseDetector, RPNTestMixin):
         return x
 
     def forward_train(self, img, img_meta, gt_bboxes=None):
-        if self.train_cfg.rpn.get('debug', False):
-            self.rpn_head.debug_imgs = tensor2imgs(img)
+        #if self.train_cfg.rpn.get('debug', False):
+        #    self.rpn_head.debug_imgs = tensor2imgs(img)
 
         x = self.extract_feat(img)
         rpn_outs = self.rpn_head(x)

@@ -1,19 +1,11 @@
 import torch
 
 
-class AnchorGenerator(object):
+class CenterGenerator(object):
 
-    def __init__(self, base_size, scales, ratios, scale_major=True, ctr=None):
-        self.base_size = base_size
-        self.scales = torch.Tensor(scales)
-        self.ratios = torch.Tensor(ratios)
-        self.scale_major = scale_major
-        self.ctr = ctr
-        self.base_anchors = self.gen_base_anchors()
+    def __init__(self, stride):
+        self.base_ctr = torch.tensor([stride/2.0, stride/2.0])
 
-    @property
-    def num_base_anchors(self):
-        return self.base_anchors.size(0)
 
     def gen_base_anchors(self):
         w = self.base_size
@@ -50,34 +42,27 @@ class AnchorGenerator(object):
         else:
             return yy, xx
 
-    def grid_anchors(self, featmap_size, stride=16, device='cuda', offset=None):
-        base_anchors = self.base_anchors.to(device)
+    def grid_anchors(self, featmap_size, offsets, stride=16, device='cuda'):
+        base_ctr = self.base_ctr.to(device)
+        import pdb; pdb.set_trace()
 
         feat_h, feat_w = featmap_size
         shift_x = torch.arange(0, feat_w, device=device) * stride
         shift_y = torch.arange(0, feat_h, device=device) * stride
+        
         shift_xx, shift_yy = self._meshgrid(shift_x, shift_y)
-        shift_xx = shift_xx.type_as(base_anchors)
-        shift_yy = shift_yy.type_as(base_anchors)
-
-        if offset is not None:
-            offset_ = offset.detach()
-            shifts = torch.stack([shift_xx + offset_[:, 0],
-                                  shift_yy + offset_[:, 1],
-                                  shift_xx + offset_[:, 0],
-                                  shift_yy + offset_[:, 1]], dim=-1)
-        else:
-            shifts = torch.stack([shift_xx, shift_yy, shift_xx, shift_yy],
-                                 dim=-1)
+        shifts = torch.stack([shift_xx, shift_yy, shift_xx, shift_yy], dim=-1)
+        shifts = shifts.type_as(base_ctr)
         # first feat_w elements correspond to the first row of shifts
-        # add A anchors (1, A, 4) to K shifts (K, 1, 4) to get
+        # add A anchors (1, A, 2) to K shifts (K, 1, 2) to get
         # shifted anchors (K, A, 4), reshape to (K*A, 4)
 
-        all_anchors = base_anchors[None, :, :] + shifts[:, None, :]
-        all_anchors = all_anchors.view(-1, 4)
+        # (1, 2) + (K, 2)
+        all_ctrs = base_ctr[None, :] + shifts
+        #all_anchors = all_anchors.view(-1, 2)
         # first A rows correspond to A anchors of (0, 0) in feature map,
         # then (0, 1), (0, 2), ...
-        return all_anchors
+        return all_ctrs
 
     def valid_flags(self, featmap_size, valid_size, device='cuda'):
         feat_h, feat_w = featmap_size

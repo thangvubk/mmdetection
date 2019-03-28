@@ -68,6 +68,21 @@ def delta2bbox(rois,
     return bboxes
 
 
+def delta2offset(deltas,
+                 scale,
+                 pos_flags=None):
+    # convert deltas (N, 2, H, W) to offsets (N, N_Offset, 2)
+    # temporary ignore normalize since it is mean 0 std 1
+    N, C, H, W = deltas.shape
+    deltas = deltas.permute(0, 2, 3, 1).reshape(N, H*W, C)
+    if pos_flags is not None:
+        pos_flags_ = pos_flags[:, :, None].type_as(deltas)
+        offsets = deltas*pos_flags_*scale
+    else:
+        offsets = deltas*scale
+    return offsets
+
+
 def bbox_flip(bboxes, img_shape):
     """Flip bboxes horizontally.
 

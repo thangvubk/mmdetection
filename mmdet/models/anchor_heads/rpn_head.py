@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mmcv.cnn import normal_init
+from mmcv.cnn import normal_init, constant_init
 
 from mmdet.core import delta2bbox
-from mmdet.ops import nms
+from mmdet.ops import nms, DeformConv
 from .anchor_head import AnchorHead
 from ..registry import HEADS
 
@@ -18,27 +18,43 @@ class RPNHead(AnchorHead):
     def _init_layers(self):
         self.rpn_conv = nn.Conv2d(
             self.in_channels, self.feat_channels, 3, padding=1)
+        self.conv_offset = nn.Conv2d(self.feat_channels,
+                                     2, 1)
+        self.offset_adapt = DeformConv(self.feat_channels,
+                                       self.feat_channels,
+                                       1)
+        self.center_conv_cls = nn.Conv2d(self.feat_channels,
+                                  self.cls_out_channels, 1)
         self.rpn_cls = nn.Conv2d(self.feat_channels,
-                                 self.num_anchors * self.cls_out_channels, 1)
+                                  self.num_anchors * self.cls_out_channels, 1)
         self.rpn_reg = nn.Conv2d(self.feat_channels, self.num_anchors * 4, 1)
 
     def init_weights(self):
         normal_init(self.rpn_conv, std=0.01)
         normal_init(self.rpn_cls, std=0.01)
         normal_init(self.rpn_reg, std=0.01)
+        normal_init(self.conv_offset, std=0.001)
 
     def forward_single(self, x):
         x = self.rpn_conv(x)
         x = F.relu(x, inplace=True)
-        rpn_cls_score = self.rpn_cls(x)
-        rpn_bbox_pred = self.rpn_reg(x)
-        return rpn_cls_score, rpn_bbox_pred
+        ctr_cls_score = self.center_conv_cls(x.detach())
+        delta = self.conv_offset(x)
+        #delta = torch.zeros_like(delta, device=delta.device)
+        offset_at_feature = delta.detach()*self.anchor_scales[0]
+        x_adapt = self.offset_adapt(x, offset_at_feature)
+        cls_score = self.rpn_cls(x_adapt)
+        bbox_pred = self.rpn_reg(x_adapt)
+        return delta, ctr_cls_score, cls_score, bbox_pred
 
-    def loss(self, cls_scores, bbox_preds, gt_bboxes, img_metas, cfg):
-        losses = super(RPNHead, self).loss(cls_scores, bbox_preds, gt_bboxes,
+    def loss(self, deltas, center_cls_scores, cls_scores, bbox_preds, gt_bboxes, img_metas, cfg):
+        losses = super(RPNHead, self).loss( deltas, center_cls_scores, cls_scores, bbox_preds, gt_bboxes,
                                            None, img_metas, cfg)
         return dict(
-            loss_rpn_cls=losses['loss_cls'], loss_rpn_reg=losses['loss_reg'])
+            #loss_rpn_center=losses['loss_center'],
+            loss_rpn_offset=losses['loss_offset'],
+            loss_rpn_cls=losses['loss_cls'],
+            loss_rpn_reg=losses['loss_reg'])
 
     def get_bboxes_single(self,
                           cls_scores,

@@ -44,7 +44,7 @@ def anchor_target(anchor_list,
     if gt_labels_list is None:
         gt_labels_list = [None for _ in range(num_imgs)]
     (all_labels, all_label_weights, all_bbox_targets, all_bbox_weights,
-     pos_inds_list, neg_inds_list) = multi_apply(
+     pos_inds_list, neg_inds_list, all_pos_flags_list) = multi_apply(
          anchor_target_single,
          anchor_list,
          valid_flag_list,
@@ -68,8 +68,10 @@ def anchor_target(anchor_list,
     label_weights_list = images_to_levels(all_label_weights, num_level_anchors)
     bbox_targets_list = images_to_levels(all_bbox_targets, num_level_anchors)
     bbox_weights_list = images_to_levels(all_bbox_weights, num_level_anchors)
+    all_pos_flags_list = images_to_levels(all_pos_flags_list, num_level_anchors)
     return (labels_list, label_weights_list, bbox_targets_list,
-            bbox_weights_list, num_total_pos, num_total_neg)
+            bbox_weights_list, num_total_pos, num_total_neg,
+            all_pos_flags_list)
 
 
 def images_to_levels(target, num_level_anchors):
@@ -116,6 +118,7 @@ def anchor_target_single(flat_anchors,
         bbox_sampler = PseudoSampler()
         sampling_result = bbox_sampler.sample(assign_result, anchors,
                                               gt_bboxes)
+    all_pos_flags = assign_result.gt_inds > 0
 
     num_valid_anchors = anchors.shape[0]
     bbox_targets = torch.zeros_like(anchors)
@@ -152,9 +155,10 @@ def anchor_target_single(flat_anchors,
                 labels, label_weights, label_channels)
         bbox_targets = unmap(bbox_targets, num_total_anchors, inside_flags)
         bbox_weights = unmap(bbox_weights, num_total_anchors, inside_flags)
+        all_pos_flags = unmap(all_pos_flags, num_total_anchors, inside_flags)
 
     return (labels, label_weights, bbox_targets, bbox_weights, pos_inds,
-            neg_inds)
+            neg_inds, all_pos_flags)
 
 
 def expand_binary_labels(labels, label_weights, label_channels):
