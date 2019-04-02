@@ -52,7 +52,8 @@ def parse_args():
         '--eval',
         type=str,
         nargs='+',
-        choices=['proposal', 'proposal_fast', 'bbox', 'segm', 'keypoints'],
+        choices=['proposal', 'proposal_fast', 'bbox', 'segm', 'keypoints',
+                 'iou_dist'],
         help='eval types')
     parser.add_argument('--show', action='store_true', help='show results')
     args = parser.parse_args()
@@ -106,7 +107,7 @@ def main():
         eval_types = args.eval
         if eval_types:
             print('Starting evaluate {}'.format(' and '.join(eval_types)))
-            if eval_types == ['proposal_fast']:
+            if eval_types[0] in ['proposal_fast', 'iou_dist']:
                 result_file = args.out
                 coco_eval(result_file, eval_types, dataset.coco)
             else:

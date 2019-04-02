@@ -102,6 +102,47 @@ def eval_recalls(gts,
     return recalls
 
 
+def eval_ious(gts,
+              proposals,
+              iou_thrs=None,
+              print_summary=True):
+    """Calculate iou distribution.
+
+    Args:
+        gts(list or ndarray): a list of arrays of shape (n, 4)
+        proposals(list or ndarray): a list of arrays of shape (k, 4) or (k, 5)
+        thrs(float or list or ndarray): iou thresholds
+
+    Print iou distribution w.r.t. iou thresholds
+    """
+
+    img_num = len(gts)
+    assert img_num == len(proposals)
+
+    all_max_ious = np.zeros(0)
+    for i in range(img_num):
+        if proposals[i].ndim == 2 and proposals[i].shape[1] == 5:
+            scores = proposals[i][:, 4]
+            sort_idx = np.argsort(scores)[::-1]
+            img_proposal = proposals[i][sort_idx, :]
+        else:
+            img_proposal = proposals[i]
+        if gts[i] is None or gts[i].shape[0] == 0:
+            max_ious = np.zeros(0, dtype=np.float32)
+        else:
+            ious = bbox_overlaps(gts[i], img_proposal[:, :4])
+            max_ious = ious.max(axis=0)
+        all_max_ious = np.hstack((all_max_ious, max_ious))
+
+    iou_dist = np.zeros(iou_thrs.size)
+    for i, thr in enumerate(iou_thrs):
+        iou_dist[i] = (all_max_ious >= thr).sum() / img_num
+
+    if print_summary:
+        print('IoU Threshold: ', '\t'.join('%.2f' % x for x in iou_thrs))
+        print('Num Proposals: ', '\t'.join('%.2f' % x for x in iou_dist))
+
+
 def print_recall_summary(recalls,
                          proposal_nums,
                          iou_thrs,
