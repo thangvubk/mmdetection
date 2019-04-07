@@ -9,7 +9,7 @@ from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
 from mmdet.core import (DistOptimizerHook, DistEvalmAPHook,
                         CocoDistEvalRecallHook, CocoDistEvalmAPHook)
 from mmdet.datasets import build_dataloader
-from mmdet.models import RPN
+from mmdet.models import RPN, CascadeRPN
 from .env import get_root_logger
 
 
@@ -80,7 +80,7 @@ def _dist_train(model, dataset, cfg, validate=False):
     runner.register_hook(DistSamplerSeedHook())
     # register eval hooks
     if validate:
-        if isinstance(model.module, RPN):
+        if isinstance(model.module, (RPN, CascadeRPN)):
             # TODO: implement recall hooks for other datasets
             runner.register_hook(CocoDistEvalRecallHook(cfg.data.val))
         else:
