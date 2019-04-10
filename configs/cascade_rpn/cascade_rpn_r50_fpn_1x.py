@@ -1,7 +1,7 @@
 # model settings
 model = dict(
     type='CascadeRPN',
-    num_stages=2,
+    num_stages=1,
     pretrained='modelzoo://resnet50',
     backbone=dict(
         type='ResNet',
@@ -142,7 +142,7 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type='TextLoggerHook'),
-        # dict(type='TensorboardLoggerHook')
+        dict(type='TensorboardLoggerHook')
     ])
 # yapf:enable
 # runtime settings

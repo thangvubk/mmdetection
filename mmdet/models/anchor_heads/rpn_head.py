@@ -48,15 +48,18 @@ class RPNHead(AnchorHead):
         x = F.relu(x, inplace=True)
         rpn_cls_score = self.rpn_cls(x)
         rpn_bbox_pred = self.rpn_reg(x)
+        #if self.feat_adapt:
+        # rpn_bbox_pred = rpn_bbox_pred * 0
         return rpn_cls_score, rpn_bbox_pred
 
     def loss(self, anchor_list, valid_flag_list, cls_scores, bbox_preds,
-             gt_bboxes, img_metas, cfg):
-        losses = super(RPNHead, self).loss(
+             gt_bboxes, img_metas, cfg, pos_inds_list, neg_inds_list, inside_flags_list):
+        losses, pos_inds_list, neg_inds_list, inside_flags_list, num_total_pos = super(RPNHead, self).loss(
             anchor_list, valid_flag_list, cls_scores, bbox_preds, gt_bboxes,
-            None, img_metas, cfg)
-        return dict(
-            loss_rpn_cls=losses['loss_cls'], loss_rpn_reg=losses['loss_reg'])
+            None, img_metas, cfg, pos_inds_list, neg_inds_list, inside_flags_list)
+        return (dict(
+            loss_rpn_cls=losses['loss_cls'], loss_rpn_reg=losses['loss_reg']), 
+                pos_inds_list, neg_inds_list, inside_flags_list, num_total_pos)
 
     def get_bboxes_single(self,
                           cls_scores,

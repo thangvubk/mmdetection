@@ -28,15 +28,15 @@ def anchor_offset(anchor_list, anchor_strides, featmap_sizes):
 
         pad = (ks - 1) // 2
         idx = torch.arange(-pad, pad + 1, dtype=dtype, device=device)
-        xx, yy = torch.meshgrid(idx, idx)
+        yy, xx = torch.meshgrid(idx, idx)  # return order matters
         xx = xx.reshape(-1)
         yy = yy.reshape(-1)
         w = (anchors[:, 2] - anchors[:, 0] + 1) / stride
         h = (anchors[:, 3] - anchors[:, 1] + 1) / stride
         w = w / ks - dilation
         h = h / ks - dilation
-        offset_x = h[:, None] * xx  # (NA, ks**2)
-        offset_y = w[:, None] * yy  # (NA, ks**2)
+        offset_x = w[:, None] * xx  # (NA, ks**2)
+        offset_y = h[:, None] * yy  # (NA, ks**2)
         return offset_x, offset_y
 
     def _ctr_offset(anchors, stride, featmap_size):
@@ -73,12 +73,17 @@ def anchor_offset(anchor_list, anchor_strides, featmap_sizes):
                 anchor_list[i][lvl], anchor_strides[lvl], featmap_sizes[lvl])
             s_offset_x, s_offset_y = _shape_offset(
                 anchor_list[i][lvl], anchor_strides[lvl])
+            dtype = s_offset_x.dtype
+            device = s_offset_x.device
+            s_offset_x = torch.zeros_like(s_offset_x, dtype=dtype, device=device)
+            s_offset_y = torch.zeros_like(s_offset_x, dtype=dtype, device=device)
 
             # offset = ctr_offset + shape_offset
             offset_x = s_offset_x + c_offset_x[:, None]
             offset_y = s_offset_y + c_offset_y[:, None]
 
-            offset = torch.stack([offset_x, offset_y], dim=-1)
+            # offset order (y0, x0, y1, x0, .., y9, x8, y9, x9)
+            offset = torch.stack([offset_y, offset_x], dim=-1)
             offset = offset.reshape(offset.size(0), -1)  # [NA, 2*ks**2]
             mlvl_offset.append(offset)
         offset_list.append(torch.cat(mlvl_offset))  # [totalNA, 2*ks**2]
@@ -96,7 +101,10 @@ def anchor_target(anchor_list,
                   gt_labels_list=None,
                   label_channels=1,
                   sampling=True,
-                  unmap_outputs=True):
+                  unmap_outputs=True,
+                  pos_inds_list=None,
+                  neg_inds_list=None,
+                  inside_flags_list=None):
     """Compute regression and classification targets for anchors.
 
     Args:
@@ -127,14 +135,21 @@ def anchor_target(anchor_list,
     # compute targets for each image
     if gt_labels_list is None:
         gt_labels_list = [None for _ in range(num_imgs)]
+    if pos_inds_list is None:
+        pos_inds_list = [None for _ in range(num_imgs)]
+        neg_inds_list = [None for _ in range(num_imgs)]
+        inside_flags_list = [None for _ in range(num_imgs)]
     (all_labels, all_label_weights, all_bbox_targets, all_bbox_weights,
-     pos_inds_list, neg_inds_list) = multi_apply(
+     pos_inds_list, neg_inds_list, inside_flags_list) = multi_apply(
          anchor_target_single,
          _anchor_list,
          _valid_flag_list,
          gt_bboxes_list,
          gt_labels_list,
          img_metas,
+         pos_inds_list,
+         neg_inds_list,
+         inside_flags_list,
          target_means=target_means,
          target_stds=target_stds,
          cfg=cfg,
@@ -153,7 +168,8 @@ def anchor_target(anchor_list,
     bbox_targets_list = images_to_levels(all_bbox_targets, num_level_anchors)
     bbox_weights_list = images_to_levels(all_bbox_weights, num_level_anchors)
     return (labels_list, label_weights_list, bbox_targets_list,
-            bbox_weights_list, num_total_pos, num_total_neg)
+            bbox_weights_list, num_total_pos, num_total_neg, 
+            pos_inds_list, neg_inds_list, inside_flags_list)
 
 
 def images_to_levels(target, num_level_anchors):
@@ -176,20 +192,23 @@ def anchor_target_single(flat_anchors,
                          gt_bboxes,
                          gt_labels,
                          img_meta,
+                         pos_inds,
+                         neg_inds,
+                         inside_flags,
                          target_means,
                          target_stds,
                          cfg,
                          label_channels=1,
                          sampling=True,
                          unmap_outputs=True):
-    inside_flags = anchor_inside_flags(flat_anchors, valid_flags,
-                                       img_meta['img_shape'][:2],
-                                       cfg.allowed_border)
+    if inside_flags is None:
+        inside_flags = anchor_inside_flags(flat_anchors, valid_flags,
+                                           img_meta['img_shape'][:2],
+                                           cfg.allowed_border)
     if not inside_flags.any():
         return (None, ) * 6
     # assign gt and sample anchors
     anchors = flat_anchors[inside_flags, :]
-
     if sampling:
         assign_result, sampling_result = assign_and_sample(
             anchors, gt_bboxes, None, None, cfg)
@@ -206,25 +225,57 @@ def anchor_target_single(flat_anchors,
     bbox_weights = torch.zeros_like(anchors)
     labels = anchors.new_zeros(num_valid_anchors, dtype=torch.long)
     label_weights = anchors.new_zeros(num_valid_anchors, dtype=torch.float)
-
-    pos_inds = sampling_result.pos_inds
-    neg_inds = sampling_result.neg_inds
-    if len(pos_inds) > 0:
-        pos_bbox_targets = bbox2delta(sampling_result.pos_bboxes,
-                                      sampling_result.pos_gt_bboxes,
-                                      target_means, target_stds)
-        bbox_targets[pos_inds, :] = pos_bbox_targets
-        bbox_weights[pos_inds, :] = 1.0
-        if gt_labels is None:
-            labels[pos_inds] = 1
-        else:
-            labels[pos_inds] = gt_labels[sampling_result.pos_assigned_gt_inds]
-        if cfg.pos_weight <= 0:
-            label_weights[pos_inds] = 1.0
-        else:
-            label_weights[pos_inds] = cfg.pos_weight
-    if len(neg_inds) > 0:
-        label_weights[neg_inds] = 1.0
+    
+    if pos_inds is None and neg_inds is None:
+        pos_inds = sampling_result.pos_inds
+        neg_inds = sampling_result.neg_inds
+        if len(pos_inds) > 0:
+            pos_bbox_targets = bbox2delta(sampling_result.pos_bboxes,
+                                          sampling_result.pos_gt_bboxes,
+                                          target_means, target_stds)
+            bbox_targets[pos_inds, :] = pos_bbox_targets
+            bbox_weights[pos_inds, :] = 1.0
+            if gt_labels is None:
+                labels[pos_inds] = 1
+            else:
+                labels[pos_inds] = gt_labels[sampling_result.pos_assigned_gt_inds]
+            if cfg.pos_weight <= 0:
+                label_weights[pos_inds] = 1.0
+            else:
+                label_weights[pos_inds] = cfg.pos_weight
+        if len(neg_inds) > 0:
+            label_weights[neg_inds] = 1.0
+    else:
+        pos_ind_buffer = anchors.new_zeros(num_valid_anchors, dtype=torch.long)
+        pos_ind_buffer[pos_inds] = 1
+        pos_inds = torch.nonzero(assign_result.gt_inds > 0)
+        pos_ind_buffer[pos_inds] = pos_ind_buffer[pos_inds] + 1
+        pos_inds = torch.nonzero(pos_ind_buffer == 2)
+        
+        # TODO pos can change to neg and need to be considered
+        neg_ind_buffer = anchors.new_zeros(num_valid_anchors, dtype=torch.long)
+        neg_ind_buffer[neg_inds] = 1
+        neg_inds = torch.nonzero(assign_result.gt_inds == 0)
+        neg_ind_buffer[neg_inds] = neg_ind_buffer[neg_inds] + 1
+        neg_inds = torch.nonzero(neg_ind_buffer == 2) 
+        if len(pos_inds) > 0:
+            pos_assigned_gt_inds = assign_result.gt_inds[pos_inds] - 1
+            pos_bbox_targets = bbox2delta(anchors[pos_inds],
+                                          gt_bboxes[pos_assigned_gt_inds, :],
+                                          target_means, target_stds)
+            bbox_targets[pos_inds, :] = pos_bbox_targets
+            bbox_weights[pos_inds, :] = 1.0
+            assert gt_labels is None
+            if gt_labels is None:
+                labels[pos_inds] = 1
+            else:
+                labels[pos_inds] = gt_labels[sampling_result.pos_assigned_gt_inds]
+            if cfg.pos_weight <= 0:
+                label_weights[pos_inds] = 1.0
+            else:
+                label_weights[pos_inds] = cfg.pos_weight
+        if len(neg_inds) > 0:
+            label_weights[neg_inds] = 1.0
 
     # map up to original set of anchors
     if unmap_outputs:
@@ -238,7 +289,7 @@ def anchor_target_single(flat_anchors,
         bbox_weights = unmap(bbox_weights, num_total_anchors, inside_flags)
 
     return (labels, label_weights, bbox_targets, bbox_weights, pos_inds,
-            neg_inds)
+            neg_inds, inside_flags)
 
 
 def expand_binary_labels(labels, label_weights, label_channels):
