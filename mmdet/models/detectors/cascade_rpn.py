@@ -20,7 +20,7 @@ class CascadeRPN(BaseDetector, RPNTestMixin):
                  test_cfg,
                  pretrained=None):
         super(CascadeRPN, self).__init__()
-        assert num_stages == len(rpn_head)
+        # assert num_stages == len(rpn_head)
         self.num_stages = num_stages
         self.backbone = builder.build_backbone(backbone)
         self.neck = builder.build_neck(neck) if neck is not None else None
@@ -61,9 +61,9 @@ class CascadeRPN(BaseDetector, RPNTestMixin):
 
             offset_list = anchor_offset(
                 anchor_list, rpn_head.anchor_strides, featmap_sizes)
-            cls_score, bbox_pred = rpn_head(x, offset_list)
+            cls_score, bbox_pred, iou_pred = rpn_head(x, offset_list)
             rpn_loss_inputs = (
-                anchor_list, valid_flag_list, cls_score, bbox_pred,
+                anchor_list, valid_flag_list, cls_score, bbox_pred, iou_pred,
                 gt_bboxes, img_meta, rpn_train_cfg)
             stage_loss = rpn_head.loss(*rpn_loss_inputs)
             for name, value in stage_loss.items():
@@ -86,12 +86,14 @@ class CascadeRPN(BaseDetector, RPNTestMixin):
             rpn_head = self.rpn_head[i]
             offset_list = anchor_offset(
                 anchor_list, rpn_head.anchor_strides, featmap_sizes)
-            cls_score, bbox_pred = rpn_head(x, offset_list)
+            cls_score, bbox_pred, iou_pred = rpn_head(x, offset_list)
             # ms_score = [ms_score[lvl] + cls_score[lvl] / self.num_stages
             #             for lvl in range(len(cls_score))]
             if i < self.num_stages - 1:
                 anchor_list = rpn_head.refine_bboxes(
                     anchor_list, bbox_pred, img_meta)
+            cls_score = [(cls_score[lvl]*iou_pred[lvl])
+                         for lvl in range(len(cls_score))]
 
         proposal_list = self.rpn_head[-1].get_bboxes(
             anchor_list, cls_score, bbox_pred, img_meta, self.test_cfg.rpn)

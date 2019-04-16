@@ -26,10 +26,12 @@ class RPNHead(AnchorHead):
         self.rpn_cls = nn.Conv2d(self.feat_channels,
                                  self.num_anchors * self.cls_out_channels, 1)
         self.rpn_reg = nn.Conv2d(self.feat_channels, self.num_anchors * 4, 1)
+        self.rpn_iou = nn.Conv2d(self.feat_channels, self.num_anchors, 1)
 
     def init_weights(self):
         normal_init(self.rpn_cls, std=0.01)
         normal_init(self.rpn_reg, std=0.01)
+        normal_init(self.rpn_iou, std=0.01)
         if self.feat_adapt:
             normal_init(self.adapt_conv, std=0.01)
         else:
@@ -48,15 +50,17 @@ class RPNHead(AnchorHead):
         x = F.relu(x, inplace=True)
         rpn_cls_score = self.rpn_cls(x)
         rpn_bbox_pred = self.rpn_reg(x)
-        return rpn_cls_score, rpn_bbox_pred
+        rpn_iou_pred = self.rpn_iou(x)
+        return rpn_cls_score, rpn_bbox_pred, rpn_iou_pred
 
     def loss(self, anchor_list, valid_flag_list, cls_scores, bbox_preds,
-             gt_bboxes, img_metas, cfg):
+             iou_preds, gt_bboxes, img_metas, cfg):
         losses = super(RPNHead, self).loss(
-            anchor_list, valid_flag_list, cls_scores, bbox_preds, gt_bboxes,
-            None, img_metas, cfg)
+            anchor_list, valid_flag_list, cls_scores, bbox_preds, iou_preds,
+            gt_bboxes, None, img_metas, cfg)
         return dict(
-            loss_rpn_cls=losses['loss_cls'], loss_rpn_reg=losses['loss_reg'])
+            loss_rpn_cls=losses['loss_cls'], loss_rpn_reg=losses['loss_reg'],
+            loss_rpn_iou=losses['loss_iou'])
 
     def get_bboxes_single(self,
                           cls_scores,

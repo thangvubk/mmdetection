@@ -128,7 +128,8 @@ def anchor_target(anchor_list,
     if gt_labels_list is None:
         gt_labels_list = [None for _ in range(num_imgs)]
     (all_labels, all_label_weights, all_bbox_targets, all_bbox_weights,
-     pos_inds_list, neg_inds_list) = multi_apply(
+     all_iou_targets, all_iou_weights, pos_inds_list, neg_inds_list
+     ) = multi_apply(
          anchor_target_single,
          _anchor_list,
          _valid_flag_list,
@@ -152,8 +153,11 @@ def anchor_target(anchor_list,
     label_weights_list = images_to_levels(all_label_weights, num_level_anchors)
     bbox_targets_list = images_to_levels(all_bbox_targets, num_level_anchors)
     bbox_weights_list = images_to_levels(all_bbox_weights, num_level_anchors)
+    iou_targets_list = images_to_levels(all_iou_targets, num_level_anchors)
+    iou_weights_list = images_to_levels(all_iou_weights, num_level_anchors)
     return (labels_list, label_weights_list, bbox_targets_list,
-            bbox_weights_list, num_total_pos, num_total_neg)
+            bbox_weights_list, iou_targets_list, iou_weights_list,
+            num_total_pos, num_total_neg)
 
 
 def images_to_levels(target, num_level_anchors):
@@ -206,6 +210,8 @@ def anchor_target_single(flat_anchors,
     bbox_weights = torch.zeros_like(anchors)
     labels = anchors.new_zeros(num_valid_anchors, dtype=torch.long)
     label_weights = anchors.new_zeros(num_valid_anchors, dtype=torch.float)
+    iou_targets = assign_result.max_overlaps
+    iou_weights = anchors.new_zeros(num_valid_anchors, dtype=torch.float)
 
     pos_inds = sampling_result.pos_inds
     neg_inds = sampling_result.neg_inds
@@ -223,8 +229,10 @@ def anchor_target_single(flat_anchors,
             label_weights[pos_inds] = 1.0
         else:
             label_weights[pos_inds] = cfg.pos_weight
+        iou_weights[pos_inds] = 1.0
     if len(neg_inds) > 0:
         label_weights[neg_inds] = 1.0
+        iou_weights[neg_inds] = 1.0
 
     # map up to original set of anchors
     if unmap_outputs:
@@ -236,9 +244,11 @@ def anchor_target_single(flat_anchors,
                 labels, label_weights, label_channels)
         bbox_targets = unmap(bbox_targets, num_total_anchors, inside_flags)
         bbox_weights = unmap(bbox_weights, num_total_anchors, inside_flags)
+        iou_targets = unmap(iou_targets, num_total_anchors, inside_flags)
+        iou_weights = unmap(iou_weights, num_total_anchors, inside_flags)
 
-    return (labels, label_weights, bbox_targets, bbox_weights, pos_inds,
-            neg_inds)
+    return (labels, label_weights, bbox_targets, bbox_weights, iou_targets,
+            iou_weights, pos_inds, neg_inds)
 
 
 def expand_binary_labels(labels, label_weights, label_channels):

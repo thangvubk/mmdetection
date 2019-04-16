@@ -73,15 +73,19 @@ class AnchorHead(nn.Module):
         self.conv_cls = nn.Conv2d(self.feat_channels,
                                   self.num_anchors * self.cls_out_channels, 1)
         self.conv_reg = nn.Conv2d(self.feat_channels, self.num_anchors * 4, 1)
+        self.conv_iou = nn.Conv2d(self.feat_channels, self.num_anchors, 1)
 
     def init_weights(self):
         normal_init(self.conv_cls, std=0.01)
         normal_init(self.conv_reg, std=0.01)
+        normal_init(self.conv_iou, std=0.01)
 
-    def forward_single(self, x):
+    def forward_single(self, x, offset=None):
+        assert offset is None
         cls_score = self.conv_cls(x)
         bbox_pred = self.conv_reg(x)
-        return cls_score, bbox_pred
+        iou_pred = self.conv_iou(x)
+        return cls_score, bbox_pred, iou_pred
 
     def forward(self, feats, offset_list=None):
         if offset_list is None:
@@ -127,8 +131,9 @@ class AnchorHead(nn.Module):
 
         return anchor_list, valid_flag_list
 
-    def loss_single(self, cls_score, bbox_pred, labels, label_weights,
-                    bbox_targets, bbox_weights, num_total_samples, cfg):
+    def loss_single(self, cls_score, bbox_pred, iou_pred, labels,
+                    label_weights, bbox_targets, bbox_weights, iou_targets,
+                    iou_weights, num_total_samples, cfg):
         # classification loss
         if self.use_sigmoid_cls:
             labels = labels.reshape(-1, self.cls_out_channels)
@@ -169,10 +174,20 @@ class AnchorHead(nn.Module):
             bbox_weights,
             beta=cfg.smoothl1_beta,
             avg_factor=num_total_samples)
-        return loss_cls, loss_reg
+        # iou_loss
+        iou_targets = iou_targets.reshape(-1, 1)
+        iou_weights = iou_weights.reshape(-1, 1)
+        iou_pred = iou_pred.permute(0, 2, 3, 1).reshape(-1, 1)
+        loss_iou = weighted_smoothl1(
+            iou_pred,
+            iou_targets,
+            iou_weights,
+            beta=cfg.smoothl1_beta,
+            avg_factor=num_total_samples) * 4
+        return loss_cls, loss_reg, loss_iou
 
     def loss(self, anchor_list, valid_flag_list, cls_scores, bbox_preds,
-             gt_bboxes, gt_labels, img_metas, cfg):
+             iou_preds, gt_bboxes, gt_labels, img_metas, cfg):
         sampling = False if self.use_focal_loss else True
         label_channels = self.cls_out_channels if self.use_sigmoid_cls else 1
         cls_reg_targets = anchor_target(
@@ -189,20 +204,25 @@ class AnchorHead(nn.Module):
         if cls_reg_targets is None:
             return None
         (labels_list, label_weights_list, bbox_targets_list, bbox_weights_list,
-         num_total_pos, num_total_neg) = cls_reg_targets
+         iou_targets_list, iou_weights_list, num_total_pos, num_total_neg
+         ) = cls_reg_targets
         num_total_samples = (num_total_pos if self.use_focal_loss else
                              num_total_pos + num_total_neg)
-        losses_cls, losses_reg = multi_apply(
+        losses_cls, losses_reg, losses_iou = multi_apply(
             self.loss_single,
             cls_scores,
             bbox_preds,
+            iou_preds,
             labels_list,
             label_weights_list,
             bbox_targets_list,
             bbox_weights_list,
+            iou_targets_list,
+            iou_weights_list,
             num_total_samples=num_total_samples,
             cfg=cfg)
-        return dict(loss_cls=losses_cls, loss_reg=losses_reg)
+        return dict(loss_cls=losses_cls, loss_reg=losses_reg,
+                    loss_iou=losses_iou)
 
     def get_bboxes(self, anchor_list, cls_scores, bbox_preds, img_metas, cfg,
                    rescale=False):
@@ -235,11 +255,11 @@ class AnchorHead(nn.Module):
                 bbox_pred = bbox_pred.permute(1, 2, 0).reshape(-1, 4)
 
                 # fix center
-                N = bbox_pred.shape[0]
-                device = bbox_pred.device
-                mask = torch.cat([torch.zeros((N, 2), device=device),
-                                  torch.ones((N, 2), device=device)], dim=1)
-                bbox_pred = bbox_pred * mask
+                #N = bbox_pred.shape[0]
+                #device = bbox_pred.device
+                #mask = torch.cat([torch.zeros((N, 2), device=device),
+                #                  torch.ones((N, 2), device=device)], dim=1)
+                #bbox_pred = bbox_pred * mask
 
                 img_shape = img_metas[img_id]['img_shape']
                 bboxes = delta2bbox(
